@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}{% if post %}Edit: {{ post['title'] }}{% else %}New Post{% endif %}{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
+<script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+{% endblock %}
+{% block content %}
+<div class="editor-wrap">
+  <input
+    type="text"
+    class="title-input"
+    id="post-title"
+    placeholder="Title…"
+    value="{{ post['title'] if post else '' }}"
+    autocomplete="off"
+  >
+  <textarea id="editor">{{ post['content'] if post else '' }}</textarea>
+  <div class="editor-footer">
+    <div>
+      <div class="upload-indicator" id="upload-indicator">Uploading image…</div>
+      <div class="paste-hint" id="paste-hint"><kbd>⌘V</kbd> / <kbd>Ctrl+V</kbd> to paste a screenshot</div>
+    </div>
+    <div class="editor-actions">
+      <a href="{% if post %}/post/{{ post['slug'] }}{% else %}/{% endif %}" class="btn btn-ghost">Cancel</a>
+      <button class="btn btn-primary" id="save-btn" onclick="savePost()">
+        {% if post %}Save changes{% else %}Publish{% endif %}
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const POST_ID = {{ post['id'] | tojson if post else 'null' }};
+
+  const mde = new EasyMDE({
+    element: document.getElementById('editor'),
+    autofocus: true,
+    spellChecker: false,
+    autosave: { enabled: false },
+    toolbar: [
+      'bold', 'italic', 'heading', '|',
+      'quote', 'unordered-list', 'ordered-list', '|',
+      'link', 'image', 'code', 'table', '|',
+      'preview', 'side-by-side', 'fullscreen', '|',
+      'guide'
+    ],
+    minHeight: '520px',
+    status: false,
+  });
+
+  // ── Image paste ──────────────────────────────────────────────────────────
+  const cmEl = mde.codemirror.getWrapperElement();
+
+  async function uploadAndInsert(file) {
+    const indicator = document.getElementById('upload-indicator');
+    const hint = document.getElementById('paste-hint');
+    indicator.classList.add('visible');
+    hint.style.display = 'none';
+
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const res = await fetch('/upload', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error('Upload failed');
+      const { url } = await res.json();
+
+      const cm = mde.codemirror;
+      const cursor = cm.getCursor();
+      const filename = file.name || 'image';
+      cm.replaceRange(`![${filename}](${url})\n`, cursor);
+      showToast('Image pasted ✓');
+    } catch(e) {
+      showToast('Upload failed', 'error');
+    } finally {
+      indicator.classList.remove('visible');
+      hint.style.display = '';
+    }
+  }
+
+  // Paste event on the CodeMirror wrapper
+  cmEl.addEventListener('paste', async (e) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imgItem = items.find(i => i.type.startsWith('image/'));
+    if (!imgItem) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const file = imgItem.getAsFile();
+    // Give it a sensible filename
+    const ext = imgItem.type.split('/')[1] || 'png';
+    Object.defineProperty(file, 'name', { value: `paste.${ext}` });
+    await uploadAndInsert(file);
+  }, true);
+
+  // Drag-and-drop onto editor as a bonus
+  cmEl.addEventListener('drop', async (e) => {
+    const files = Array.from(e.dataTransfer?.files || []);
+    const img = files.find(f => f.type.startsWith('image/'));
+    if (!img) return;
+    e.preventDefault();
+    await uploadAndInsert(img);
+  });
+
+  // ── Save ─────────────────────────────────────────────────────────────────
+  async function savePost() {
+    const title = document.getElementById('post-title').value.trim() || 'Untitled';
+    const content = mde.value();
+    const btn = document.getElementById('save-btn');
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+
+    try {
+      let res;
+      if (POST_ID) {
+        res = await fetch(`/api/posts/${POST_ID}`, {
+          method: 'PUT',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ title, content })
+        });
+      } else {
+        res = await fetch('/api/posts', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ title, content })
+        });
+      }
+      const data = await res.json();
+      showToast('Saved ✓');
+      setTimeout(() => window.location.href = `/post/${data.slug}`, 400);
+    } catch(e) {
+      showToast('Save failed', 'error');
+      btn.disabled = false;
+      btn.textContent = POST_ID ? 'Save changes' : 'Publish';
+    }
+  }
+
+  // Keyboard shortcut: Cmd/Ctrl+S
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      e.preventDefault();
+      savePost();
+    }
+  });
+</script>
+{% endblock %}

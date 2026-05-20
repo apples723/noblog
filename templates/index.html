@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ blog_title }}{% endblock %}
+{% block content %}
+<div class="container">
+  {% if posts %}
+    <p class="page-heading"><span>{{ posts|length }}</span> entr{{ 'y' if posts|length == 1 else 'ies' }}</p>
+    <ul class="post-list">
+      {% for post in posts %}
+      <li class="post-item">
+        <div class="post-item-meta">{{ post['created_at'][:10] }}</div>
+        <div class="post-item-title">
+          <a href="/post/{{ post['slug'] }}">{{ post['title'] }}</a>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty-state">
+      <p>No entries yet.</p>
+      <a href="/new" class="btn btn-primary">Write your first post</a>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

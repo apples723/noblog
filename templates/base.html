@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}{{ blog_title }}{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <!-- Apply saved theme immediately to prevent flash -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('theme');
+      if (saved) {
+        document.documentElement.setAttribute('data-theme', saved);
+      } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="site-header">
+    <a class="site-title" href="/">&#9632; {{ blog_title }}</a>
+    <div class="header-actions">
+      <button
+        class="theme-toggle"
+        id="theme-toggle"
+        type="button"
+        aria-label="Toggle light and dark mode"
+        title="Toggle theme"
+      >
+        <span id="theme-icon" aria-hidden="true">🌙</span>
+      </button>
+      <a href="/new" class="btn btn-primary">+ New Post</a>
+    </div>
+  </header>
+  {% block content %}{% endblock %}
+  <div id="toast"></div>
+  <script>
+    // ── Toast ──
+    function showToast(msg, type='success') {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'show ' + type;
+      setTimeout(() => t.className = '', 2500);
+    }
+
+    // ── Theme toggle ──
+    (function() {
+      const toggle = document.getElementById('theme-toggle');
+      const icon = document.getElementById('theme-icon');
+
+      function getTheme() {
+        return document.documentElement.getAttribute('data-theme') || 'light';
+      }
+
+      function updateIcon() {
+        icon.textContent = getTheme() === 'dark' ? '☀️' : '🌙';
+      }
+
+      updateIcon();
+
+      toggle.addEventListener('click', () => {
+        const next = getTheme() === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('theme', next);
+        updateIcon();
+      });
+    })();
+  </script>
+</body>
+</html>

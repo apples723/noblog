@@ -1,0 +1,16 @@
+services:
+  blog:
+    image: dkr.cidrs.net/noblog:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3001:5001"
+    environment:
+      - BLOG_TITLE=Office Dungeon
+    volumes:
+      - blog_uploads:/app/uploads
+      - blog_db:/app/instance
+
+volumes:
+  blog_uploads:
+  blog_db:

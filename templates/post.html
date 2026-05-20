@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ post['title'] }}{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+{% endblock %}
+{% block content %}
+<div class="container">
+  <div class="post-header">
+    <h1 class="post-title">{{ post['title'] }}</h1>
+    <div class="post-date">{{ post['created_at'][:10] }}{% if post['updated_at'] != post['created_at'] %} &middot; edited {{ post['updated_at'][:10] }}{% endif %}</div>
+  </div>
+  <div class="post-body" id="post-body"></div>
+  <div class="post-actions">
+    <a href="/edit/{{ post['id'] }}" class="btn btn-ghost">Edit</a>
+    <button class="btn btn-danger" onclick="deletePost({{ post['id'] }})">Delete</button>
+    <a href="/" class="btn btn-ghost" style="margin-left:auto">← All posts</a>
+  </div>
+</div>
+<script>
+  const raw = {{ post['content'] | tojson }};
+  document.getElementById('post-body').innerHTML = marked.parse(raw);
+
+  async function deletePost(id) {
+    if (!confirm('Delete this post?')) return;
+    await fetch(`/api/posts/${id}`, { method: 'DELETE' });
+    window.location.href = '/';
+  }
+</script>
+{% endblock %}
