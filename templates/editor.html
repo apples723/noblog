@@ -31,11 +31,12 @@
 
 <script>
   const POST_ID = {{ post['id'] | tojson if post else 'null' }};
-
   const spellCheck = {{ spell_check | tojson }};
+  const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+    || (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
 
-  // ── Image upload helper (shared by paste, drag-drop, and file picker) ────
-  async function uploadAndInsert(file) {
+  // ── Shared: image upload helper ──────────────────────────────────────────
+  async function uploadImage(file) {
     const indicator = document.getElementById('upload-indicator');
     const hint = document.getElementById('paste-hint');
     indicator.classList.add('visible');
@@ -47,94 +48,213 @@
       const res = await fetch('/upload', { method: 'POST', body: fd });
       if (!res.ok) throw new Error('Upload failed');
       const { url } = await res.json();
-
-      const cm = mde.codemirror;
-      const cursor = cm.getCursor();
-      const filename = file.name || 'image';
-      cm.replaceRange(`![${filename}](${url})\n`, cursor);
       showToast('Image uploaded ✓');
+      return { url, filename: file.name || 'image' };
     } catch(e) {
       showToast('Upload failed', 'error');
+      return null;
     } finally {
       indicator.classList.remove('visible');
       hint.style.display = '';
     }
   }
 
-  // Hidden file input for photo picker / camera capture
+  // Hidden file input for photo picker / camera capture (shared)
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
   fileInput.accept = 'image/*';
   fileInput.style.display = 'none';
   document.body.appendChild(fileInput);
 
-  fileInput.addEventListener('change', async () => {
-    const file = fileInput.files[0];
-    if (file) await uploadAndInsert(file);
-    fileInput.value = '';
-  });
+  // ── Get editor content (abstracted for mobile vs desktop) ────────────────
+  let getContent, setContent;
 
-  const mde = new EasyMDE({
-    element: document.getElementById('editor'),
-    autofocus: true,
-    spellChecker: spellCheck,
-    autosave: { enabled: false },
-    toolbar: [
-      'bold', 'italic', 'heading', '|',
-      'quote', 'unordered-list', 'ordered-list', '|',
-      'link', 'image', {
-        name: 'upload-image',
-        action: () => fileInput.click(),
-        className: 'fa fa-camera',
-        title: 'Upload Photo',
-      }, 'code', 'table', '|',
-      'preview', 'side-by-side', 'fullscreen', '|',
-      'guide'
-    ],
-    minHeight: '520px',
-    status: false,
-    inputStyle: 'contenteditable',
-  });
-
-  // Enable native OS spellcheck & autocorrect on CodeMirror's editing surface
-  // so mobile keyboards offer word suggestions (like the title input does).
-  if (spellCheck) {
-    const cmInput = mde.codemirror.getInputField();
-    cmInput.setAttribute('spellcheck', 'true');
-    cmInput.setAttribute('autocorrect', 'on');
-    cmInput.setAttribute('autocapitalize', 'sentences');
+  if (isMobile) {
+    initMobileEditor();
+  } else {
+    initDesktopEditor();
   }
 
-  // ── Image paste ──────────────────────────────────────────────────────────
-  const cmEl = mde.codemirror.getWrapperElement();
+  function initMobileEditor() {
+    const textarea = document.getElementById('editor');
+    textarea.classList.add('mobile-editor');
+    textarea.setAttribute('spellcheck', 'true');
+    textarea.setAttribute('autocorrect', 'on');
+    textarea.setAttribute('autocapitalize', 'sentences');
+    textarea.setAttribute('autocomplete', 'on');
+    textarea.style.display = 'block';
 
-  // Paste event on the CodeMirror wrapper
-  cmEl.addEventListener('paste', async (e) => {
-    const items = Array.from(e.clipboardData?.items || []);
-    const imgItem = items.find(i => i.type.startsWith('image/'));
-    if (!imgItem) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const file = imgItem.getAsFile();
-    // Give it a sensible filename
-    const ext = imgItem.type.split('/')[1] || 'png';
-    Object.defineProperty(file, 'name', { value: `paste.${ext}` });
-    await uploadAndInsert(file);
-  }, true);
+    // Hide EasyMDE CSS artifacts — we won't initialize it
+    const style = document.createElement('style');
+    style.textContent = '.EasyMDEContainer { display: none !important; }';
+    document.head.appendChild(style);
 
-  // Drag-and-drop onto editor as a bonus
-  cmEl.addEventListener('drop', async (e) => {
-    const files = Array.from(e.dataTransfer?.files || []);
-    const img = files.find(f => f.type.startsWith('image/'));
-    if (!img) return;
-    e.preventDefault();
-    await uploadAndInsert(img);
-  });
+    getContent = () => textarea.value;
+    setContent = (v) => { textarea.value = v; };
+
+    // ── Mobile toolbar ─────────────────────────────────────────────────────
+    const toolbar = document.createElement('div');
+    toolbar.className = 'mobile-toolbar';
+    toolbar.innerHTML = `
+      <button type="button" data-action="bold" title="Bold"><b>B</b></button>
+      <button type="button" data-action="italic" title="Italic"><i>I</i></button>
+      <button type="button" data-action="heading" title="Heading"><b>H</b></button>
+      <span class="mobile-toolbar-sep"></span>
+      <button type="button" data-action="link" title="Link">🔗</button>
+      <button type="button" data-action="quote" title="Quote">"</button>
+      <button type="button" data-action="ul" title="Bullet list">•</button>
+      <button type="button" data-action="ol" title="Numbered list">1.</button>
+      <span class="mobile-toolbar-sep"></span>
+      <button type="button" data-action="photo" title="Upload photo">📷</button>
+    `;
+    textarea.parentNode.insertBefore(toolbar, textarea);
+
+    // Insert markdown formatting around selection
+    function wrapSelection(before, after) {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const selected = textarea.value.substring(start, end);
+      const replacement = before + selected + (after || '');
+      textarea.setRangeText(replacement, start, end, 'select');
+      textarea.focus();
+      // Move cursor inside if no selection
+      if (start === end) {
+        textarea.selectionStart = textarea.selectionEnd = start + before.length;
+      }
+    }
+
+    function insertAtCursor(text) {
+      const start = textarea.selectionStart;
+      textarea.setRangeText(text, start, textarea.selectionEnd, 'end');
+      textarea.focus();
+    }
+
+    function prependLine(prefix) {
+      const start = textarea.selectionStart;
+      const val = textarea.value;
+      // Find the start of the current line
+      const lineStart = val.lastIndexOf('\n', start - 1) + 1;
+      textarea.setRangeText(prefix, lineStart, lineStart, 'end');
+      textarea.focus();
+    }
+
+    toolbar.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const action = btn.dataset.action;
+
+      switch (action) {
+        case 'bold':    wrapSelection('**', '**'); break;
+        case 'italic':  wrapSelection('_', '_'); break;
+        case 'heading': prependLine('## '); break;
+        case 'link':    wrapSelection('[', '](url)'); break;
+        case 'quote':   prependLine('> '); break;
+        case 'ul':      prependLine('- '); break;
+        case 'ol':      prependLine('1. '); break;
+        case 'photo':   fileInput.click(); break;
+      }
+    });
+
+    // File input handler for mobile
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const result = await uploadImage(file);
+      if (result) insertAtCursor(`![${result.filename}](${result.url})\n`);
+      fileInput.value = '';
+    });
+
+    // Paste image support on mobile textarea
+    textarea.addEventListener('paste', async (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const imgItem = items.find(i => i.type.startsWith('image/'));
+      if (!imgItem) return;
+      e.preventDefault();
+      const file = imgItem.getAsFile();
+      const ext = imgItem.type.split('/')[1] || 'png';
+      Object.defineProperty(file, 'name', { value: `paste.${ext}` });
+      const result = await uploadImage(file);
+      if (result) insertAtCursor(`![${result.filename}](${result.url})\n`);
+    });
+  }
+
+  function initDesktopEditor() {
+    // File input change handler needs to be set up before EasyMDE
+    // (the actual upload happens after mde is initialized — async is fine)
+    let mde;
+
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const result = await uploadImage(file);
+      if (result) {
+        const cm = mde.codemirror;
+        cm.replaceRange(`![${result.filename}](${result.url})\n`, cm.getCursor());
+      }
+      fileInput.value = '';
+    });
+
+    mde = new EasyMDE({
+      element: document.getElementById('editor'),
+      autofocus: true,
+      spellChecker: spellCheck,
+      autosave: { enabled: false },
+      toolbar: [
+        'bold', 'italic', 'heading', '|',
+        'quote', 'unordered-list', 'ordered-list', '|',
+        'link', 'image', {
+          name: 'upload-image',
+          action: () => fileInput.click(),
+          className: 'fa fa-camera',
+          title: 'Upload Photo',
+        }, 'code', 'table', '|',
+        'preview', 'side-by-side', 'fullscreen', '|',
+        'guide'
+      ],
+      minHeight: '520px',
+      status: false,
+    });
+
+    getContent = () => mde.value();
+    setContent = (v) => mde.value(v);
+
+    // ── Image paste on desktop ─────────────────────────────────────────────
+    const cmEl = mde.codemirror.getWrapperElement();
+
+    cmEl.addEventListener('paste', async (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const imgItem = items.find(i => i.type.startsWith('image/'));
+      if (!imgItem) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const file = imgItem.getAsFile();
+      const ext = imgItem.type.split('/')[1] || 'png';
+      Object.defineProperty(file, 'name', { value: `paste.${ext}` });
+      const result = await uploadImage(file);
+      if (result) {
+        const cm = mde.codemirror;
+        cm.replaceRange(`![${result.filename}](${result.url})\n`, cm.getCursor());
+      }
+    }, true);
+
+    // Drag-and-drop
+    cmEl.addEventListener('drop', async (e) => {
+      const files = Array.from(e.dataTransfer?.files || []);
+      const img = files.find(f => f.type.startsWith('image/'));
+      if (!img) return;
+      e.preventDefault();
+      const result = await uploadImage(img);
+      if (result) {
+        const cm = mde.codemirror;
+        cm.replaceRange(`![${result.filename}](${result.url})\n`, cm.getCursor());
+      }
+    });
+  }
 
   // ── Save ─────────────────────────────────────────────────────────────────
   async function savePost() {
     const title = document.getElementById('post-title').value.trim() || 'Untitled';
-    const content = mde.value();
+    const content = getContent();
     const btn = document.getElementById('save-btn');
     btn.disabled = true;
     btn.textContent = 'Saving…';
