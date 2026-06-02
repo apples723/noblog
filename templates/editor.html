@@ -32,10 +32,12 @@
 <script>
   const POST_ID = {{ post['id'] | tojson if post else 'null' }};
 
+  const spellCheck = {{ spell_check | tojson }};
+
   const mde = new EasyMDE({
     element: document.getElementById('editor'),
     autofocus: true,
-    spellChecker: false,
+    spellChecker: spellCheck,
     autosave: { enabled: false },
     toolbar: [
       'bold', 'italic', 'heading', '|',
@@ -46,7 +48,17 @@
     ],
     minHeight: '520px',
     status: false,
+    inputStyle: 'contenteditable',
   });
+
+  // Enable native OS spellcheck & autocorrect on CodeMirror's editing surface
+  // so mobile keyboards offer word suggestions (like the title input does).
+  if (spellCheck) {
+    const cmInput = mde.codemirror.getInputField();
+    cmInput.setAttribute('spellcheck', 'true');
+    cmInput.setAttribute('autocorrect', 'on');
+    cmInput.setAttribute('autocapitalize', 'sentences');
+  }
 
   // ── Image paste ──────────────────────────────────────────────────────────
   const cmEl = mde.codemirror.getWrapperElement();
