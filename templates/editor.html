@@ -34,6 +34,46 @@
 
   const spellCheck = {{ spell_check | tojson }};
 
+  // ── Image upload helper (shared by paste, drag-drop, and file picker) ────
+  async function uploadAndInsert(file) {
+    const indicator = document.getElementById('upload-indicator');
+    const hint = document.getElementById('paste-hint');
+    indicator.classList.add('visible');
+    hint.style.display = 'none';
+
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const res = await fetch('/upload', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error('Upload failed');
+      const { url } = await res.json();
+
+      const cm = mde.codemirror;
+      const cursor = cm.getCursor();
+      const filename = file.name || 'image';
+      cm.replaceRange(`![${filename}](${url})\n`, cursor);
+      showToast('Image uploaded ✓');
+    } catch(e) {
+      showToast('Upload failed', 'error');
+    } finally {
+      indicator.classList.remove('visible');
+      hint.style.display = '';
+    }
+  }
+
+  // Hidden file input for photo picker / camera capture
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'image/*';
+  fileInput.style.display = 'none';
+  document.body.appendChild(fileInput);
+
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    if (file) await uploadAndInsert(file);
+    fileInput.value = '';
+  });
+
   const mde = new EasyMDE({
     element: document.getElementById('editor'),
     autofocus: true,
@@ -42,7 +82,12 @@
     toolbar: [
       'bold', 'italic', 'heading', '|',
       'quote', 'unordered-list', 'ordered-list', '|',
-      'link', 'image', 'code', 'table', '|',
+      'link', 'image', {
+        name: 'upload-image',
+        action: () => fileInput.click(),
+        className: 'fa fa-camera',
+        title: 'Upload Photo',
+      }, 'code', 'table', '|',
       'preview', 'side-by-side', 'fullscreen', '|',
       'guide'
     ],
@@ -62,32 +107,6 @@
 
   // ── Image paste ──────────────────────────────────────────────────────────
   const cmEl = mde.codemirror.getWrapperElement();
-
-  async function uploadAndInsert(file) {
-    const indicator = document.getElementById('upload-indicator');
-    const hint = document.getElementById('paste-hint');
-    indicator.classList.add('visible');
-    hint.style.display = 'none';
-
-    try {
-      const fd = new FormData();
-      fd.append('image', file);
-      const res = await fetch('/upload', { method: 'POST', body: fd });
-      if (!res.ok) throw new Error('Upload failed');
-      const { url } = await res.json();
-
-      const cm = mde.codemirror;
-      const cursor = cm.getCursor();
-      const filename = file.name || 'image';
-      cm.replaceRange(`![${filename}](${url})\n`, cursor);
-      showToast('Image pasted ✓');
-    } catch(e) {
-      showToast('Upload failed', 'error');
-    } finally {
-      indicator.classList.remove('visible');
-      hint.style.display = '';
-    }
-  }
 
   // Paste event on the CodeMirror wrapper
   cmEl.addEventListener('paste', async (e) => {
