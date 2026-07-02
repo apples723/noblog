@@ -6,6 +6,7 @@
   <title>{% block title %}{{ blog_title }}{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
   <!-- Apply saved theme immediately to prevent flash -->
   <script>
@@ -27,12 +28,21 @@
       <span class="version-badge">{{ app_version }}</span>
       <button
         class="theme-toggle"
+        id="readonly-toggle"
+        type="button"
+        aria-label="Toggle readonly mode"
+        title="Toggle readonly mode"
+      >
+        <i id="readonly-icon" class="fa-solid {% if readonly_mode %}fa-lock icon-readonly-on{% else %}fa-lock-open icon-readonly-off{% endif %}" aria-hidden="true"></i>
+      </button>
+      <button
+        class="theme-toggle"
         id="theme-toggle"
         type="button"
         aria-label="Toggle light and dark mode"
         title="Toggle theme"
       >
-        <span id="theme-icon" aria-hidden="true">🌙</span>
+        <i id="theme-icon" class="fa-solid fa-moon" aria-hidden="true"></i>
       </button>
       <a href="/new" class="btn btn-primary">+ New Post</a>
     </div>
@@ -58,7 +68,11 @@
       }
 
       function updateIcon() {
-        icon.textContent = getTheme() === 'dark' ? '☀️' : '🌙';
+        if (getTheme() === 'dark') {
+          icon.className = 'fa-solid fa-sun';
+        } else {
+          icon.className = 'fa-solid fa-moon';
+        }
       }
 
       updateIcon();
@@ -68,6 +82,22 @@
         document.documentElement.setAttribute('data-theme', next);
         localStorage.setItem('theme', next);
         updateIcon();
+      });
+    })();
+    // ── Readonly toggle ──
+    (function() {
+      const btn = document.getElementById('readonly-toggle');
+      const icon = document.getElementById('readonly-icon');
+      btn.addEventListener('click', async () => {
+        const res = await fetch('/api/settings/readonly', { method: 'POST' });
+        const data = await res.json();
+        if (data.readonly) {
+          icon.className = 'fa-solid fa-lock icon-readonly-on';
+        } else {
+          icon.className = 'fa-solid fa-lock-open icon-readonly-off';
+        }
+        showToast(data.readonly ? 'Readonly mode on' : 'Readonly mode off');
+        setTimeout(() => location.reload(), 1500);
       });
     })();
   </script>

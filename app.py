@@ -19,10 +19,14 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
 @app.context_processor
 def inject_globals():
+    with get_db() as db:
+        row = db.execute("SELECT value FROM settings WHERE key = 'readonly'").fetchone()
+        readonly = row['value'] == '1' if row else False
     return {
         'blog_title': app.config['BLOG_TITLE'],
         'spell_check': app.config['SPELL_CHECK'],
         'app_version': app.config['APP_VERSION'],
+        'readonly_mode': readonly,
     }
 
 def allowed_file(filename):
@@ -45,6 +49,12 @@ def init_db():
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 deleted_at TEXT
+            )
+        ''')
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )
         ''')
         # Migrate: add missing columns for existing databases
@@ -170,6 +180,19 @@ def upload_image():
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/api/settings/readonly', methods=['POST'])
+def toggle_readonly():
+    with get_db() as db:
+        row = db.execute("SELECT value FROM settings WHERE key = 'readonly'").fetchone()
+        current = row['value'] == '1' if row else False
+        new_val = '0' if current else '1'
+        db.execute(
+            "INSERT INTO settings (key, value) VALUES ('readonly', ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+            (new_val, new_val)
+        )
+        db.commit()
+    return jsonify({'readonly': new_val == '1'})
 
 if __name__ == '__main__':
     init_db()

@@ -113,6 +113,10 @@ body {
   outline-offset: 2px;
 }
 
+/* Readonly icon colors */
+.icon-readonly-on { color: var(--danger) !important; }
+.icon-readonly-off { color: #2ecc71 !important; }
+
 /* ── Buttons ────────────────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex;

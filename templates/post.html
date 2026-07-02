@@ -18,8 +18,10 @@
   </div>
   <div class="post-body" id="post-body"></div>
   <div class="post-actions">
+    {% if not readonly_mode %}
     <a href="/edit/{{ post['id'] }}" class="btn btn-ghost">Edit</a>
     <button class="btn btn-danger" onclick="deletePost({{ post['id'] }})">Delete</button>
+    {% endif %}
     <a href="/" class="btn btn-ghost" style="margin-left:auto">← All posts</a>
   </div>
 </div>
