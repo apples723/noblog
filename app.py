@@ -83,7 +83,7 @@ def parse_tags(raw):
 def index():
     with get_db() as db:
         posts = db.execute(
-            'SELECT id, title, slug, tags, created_at FROM posts WHERE deleted_at IS NULL ORDER BY created_at DESC'
+            'SELECT id, title, slug, tags, created_at, updated_at FROM posts WHERE deleted_at IS NULL ORDER BY created_at DESC'
         ).fetchall()
         all_tags = sorted(set(
             t for row in posts for t in parse_tags(row['tags'])

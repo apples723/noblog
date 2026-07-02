@@ -5,11 +5,20 @@
   {% if posts %}
     <div class="page-heading-row">
       <p class="page-heading"><span id="visible-count">{{ posts|length }}</span> entr{{ 'y' if posts|length == 1 else 'ies' }}</p>
-      {% if all_tags %}
-      <button class="btn btn-ghost filter-toggle" id="filter-toggle" type="button">
-        <span id="filter-icon">▼</span> Filter
-      </button>
-      {% endif %}
+      <div class="filter-dropdown-wrap" id="filter-dropdown-wrap">
+        <button class="btn btn-ghost filter-toggle" id="filter-toggle" type="button">
+          <span id="filter-icon">▼</span> Filter
+        </button>
+        <div class="filter-dropdown hidden" id="filter-dropdown">
+          {% if all_tags %}
+          <button class="filter-dropdown-item" data-action="toggle-tags" type="button">Filter by tag</button>
+          {% endif %}
+          <div class="filter-dropdown-divider"></div>
+          <div class="filter-dropdown-label">Sort by</div>
+          <button class="filter-dropdown-item active" data-sort="newest" type="button">Newest</button>
+          <button class="filter-dropdown-item" data-sort="modified" type="button">Last modified</button>
+        </div>
+      </div>
     </div>
     {% if all_tags %}
     <div class="tag-filter hidden" id="tag-filter">
@@ -21,7 +30,7 @@
     {% endif %}
     <ul class="post-list" id="post-list">
       {% for post in posts %}
-      <li class="post-item" data-tags="{{ post['tags'] }}">
+      <li class="post-item" data-tags="{{ post['tags'] }}" data-created="{{ post['created_at'] }}" data-updated="{{ post['updated_at'] }}">
         <div class="post-item-meta">{{ post['created_at'][:10] }}</div>
         <div class="post-item-title">
           <a href="/post/{{ post['slug'] }}">{{ post['title'] }}</a>
@@ -48,10 +57,12 @@
   {% endif %}
 </div>
 
-{% if posts and all_tags %}
+{% if posts %}
 <script>
 (function() {
+  const dropdownWrap = document.getElementById('filter-dropdown-wrap');
   const toggle = document.getElementById('filter-toggle');
+  const dropdown = document.getElementById('filter-dropdown');
   const filterBar = document.getElementById('tag-filter');
   const icon = document.getElementById('filter-icon');
   const postList = document.getElementById('post-list');
@@ -59,16 +70,66 @@
   const countEl = document.getElementById('visible-count');
   const noResults = document.getElementById('no-results');
   const clearBtn = document.getElementById('clear-filter');
-  const pills = Array.from(filterBar.querySelectorAll('.tag-pill'));
-  const allPill = filterBar.querySelector('[data-tag="__all__"]');
 
   let selectedTags = new Set();
+  let currentSort = 'newest';
 
-  // Toggle filter bar visibility
-  toggle.addEventListener('click', () => {
-    filterBar.classList.toggle('hidden');
-    icon.textContent = filterBar.classList.contains('hidden') ? '▼' : '▲';
+  // Toggle dropdown visibility
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    dropdown.classList.toggle('hidden');
+    icon.textContent = dropdown.classList.contains('hidden') ? '▼' : '▲';
   });
+
+  // Close dropdown on outside click
+  document.addEventListener('click', (e) => {
+    if (!dropdownWrap.contains(e.target)) {
+      dropdown.classList.add('hidden');
+      icon.textContent = '▼';
+    }
+  });
+
+  // Dropdown item clicks
+  dropdown.addEventListener('click', (e) => {
+    const item = e.target.closest('.filter-dropdown-item');
+    if (!item) return;
+
+    // Toggle tags action
+    if (item.dataset.action === 'toggle-tags') {
+      if (filterBar) {
+        filterBar.classList.toggle('hidden');
+      }
+      dropdown.classList.add('hidden');
+      icon.textContent = '▼';
+      return;
+    }
+
+    // Sort action
+    if (item.dataset.sort) {
+      currentSort = item.dataset.sort;
+      dropdown.querySelectorAll('[data-sort]').forEach(b => b.classList.remove('active'));
+      item.classList.add('active');
+      applySort();
+      dropdown.classList.add('hidden');
+      icon.textContent = '▼';
+    }
+  });
+
+  // Sort logic
+  function applySort() {
+    const sorted = [...items].sort((a, b) => {
+      let dateA, dateB;
+      if (currentSort === 'modified') {
+        dateA = a.dataset.updated || a.dataset.created;
+        dateB = b.dataset.updated || b.dataset.created;
+      } else {
+        dateA = a.dataset.created;
+        dateB = b.dataset.created;
+      }
+      return dateB.localeCompare(dateA);
+    });
+    sorted.forEach(item => postList.appendChild(item));
+  }
 
   // Filter logic
   function applyFilter() {
@@ -84,36 +145,44 @@
     noResults.classList.toggle('hidden', visible > 0);
 
     // Update pill states
-    pills.forEach(p => {
-      if (p === allPill) {
-        p.classList.toggle('active', selectedTags.size === 0);
+    if (filterBar) {
+      const pills = Array.from(filterBar.querySelectorAll('.tag-pill'));
+      const allPill = filterBar.querySelector('[data-tag="__all__"]');
+      pills.forEach(p => {
+        if (p === allPill) {
+          p.classList.toggle('active', selectedTags.size === 0);
+        } else {
+          p.classList.toggle('active', selectedTags.has(p.dataset.tag));
+        }
+      });
+    }
+  }
+
+  if (filterBar) {
+    filterBar.addEventListener('click', (e) => {
+      const pill = e.target.closest('.tag-pill');
+      if (!pill) return;
+
+      const tag = pill.dataset.tag;
+      if (tag === '__all__') {
+        selectedTags.clear();
       } else {
-        p.classList.toggle('active', selectedTags.has(p.dataset.tag));
+        if (selectedTags.has(tag)) {
+          selectedTags.delete(tag);
+        } else {
+          selectedTags.add(tag);
+        }
       }
+      applyFilter();
     });
   }
 
-  filterBar.addEventListener('click', (e) => {
-    const pill = e.target.closest('.tag-pill');
-    if (!pill) return;
-
-    const tag = pill.dataset.tag;
-    if (tag === '__all__') {
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
       selectedTags.clear();
-    } else {
-      if (selectedTags.has(tag)) {
-        selectedTags.delete(tag);
-      } else {
-        selectedTags.add(tag);
-      }
-    }
-    applyFilter();
-  });
-
-  clearBtn.addEventListener('click', () => {
-    selectedTags.clear();
-    applyFilter();
-  });
+      applyFilter();
+    });
+  }
 })();
 </script>
 {% endif %}

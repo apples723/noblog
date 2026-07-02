@@ -296,6 +296,60 @@ body {
   font-size: 0.6rem;
 }
 
+/* ── Filter dropdown ─────────────────────────────────────────────────────────── */
+.filter-dropdown-wrap {
+  position: relative;
+  display: inline-block;
+}
+.filter-dropdown {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+  z-index: 200;
+}
+.filter-dropdown.hidden {
+  display: none;
+}
+.filter-dropdown-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.82rem;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.filter-dropdown-item:hover {
+  background: var(--border);
+}
+.filter-dropdown-item.active {
+  color: var(--accent);
+  font-weight: 500;
+}
+.filter-dropdown-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0.3rem 0;
+}
+.filter-dropdown-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem;
+  color: var(--muted);
+  padding: 0.3rem 0.9rem 0.15rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .tag-pill {
   display: inline-block;
   font-family: 'JetBrains Mono', monospace;
