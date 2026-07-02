@@ -9,6 +9,7 @@ app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 app.config['BLOG_TITLE'] = os.environ.get('BLOG_TITLE', 'My Blog')
 app.config['SPELL_CHECK'] = os.environ.get('SPELL_CHECK', '').lower() in ('1', 'true', 'yes')
+app.config['APP_VERSION'] = os.environ.get('APP_VERSION', 'dev')
 DB_PATH = os.path.join(os.path.dirname(__file__), 'instance', 'blog.db')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -21,6 +22,7 @@ def inject_globals():
     return {
         'blog_title': app.config['BLOG_TITLE'],
         'spell_check': app.config['SPELL_CHECK'],
+        'app_version': app.config['APP_VERSION'],
     }
 
 def allowed_file(filename):
@@ -39,10 +41,18 @@ def init_db():
                 title TEXT NOT NULL,
                 slug TEXT UNIQUE NOT NULL,
                 content TEXT NOT NULL,
+                tags TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
             )
         ''')
+        # Migrate: add missing columns for existing databases
+        cols = [row[1] for row in db.execute('PRAGMA table_info(posts)').fetchall()]
+        if 'tags' not in cols:
+            db.execute("ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
+        if 'deleted_at' not in cols:
+            db.execute("ALTER TABLE posts ADD COLUMN deleted_at TEXT")
         db.commit()
 
 def slugify(title):
@@ -63,18 +73,27 @@ def unique_slug(db, base_slug):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+def parse_tags(raw):
+    """Normalize a comma-separated tag string into sorted, deduplicated, lowercase list."""
+    if not raw:
+        return []
+    return sorted(set(t.strip().lower() for t in raw.split(',') if t.strip()))
+
 @app.route('/')
 def index():
     with get_db() as db:
         posts = db.execute(
-            'SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC'
+            'SELECT id, title, slug, tags, created_at FROM posts WHERE deleted_at IS NULL ORDER BY created_at DESC'
         ).fetchall()
-    return render_template('index.html', posts=posts)
+        all_tags = sorted(set(
+            t for row in posts for t in parse_tags(row['tags'])
+        ))
+    return render_template('index.html', posts=posts, all_tags=all_tags)
 
 @app.route('/post/<slug>')
 def view_post(slug):
     with get_db() as db:
-        post = db.execute('SELECT * FROM posts WHERE slug = ?', (slug,)).fetchone()
+        post = db.execute('SELECT * FROM posts WHERE slug = ? AND deleted_at IS NULL', (slug,)).fetchone()
     if not post:
         abort(404)
     return render_template('post.html', post=post)
@@ -86,7 +105,7 @@ def new_post():
 @app.route('/edit/<int:post_id>')
 def edit_post(post_id):
     with get_db() as db:
-        post = db.execute('SELECT * FROM posts WHERE id = ?', (post_id,)).fetchone()
+        post = db.execute('SELECT * FROM posts WHERE id = ? AND deleted_at IS NULL', (post_id,)).fetchone()
     if not post:
         abort(404)
     return render_template('editor.html', post=post)
@@ -96,13 +115,14 @@ def create_post():
     data = request.json
     title = (data.get('title') or '').strip() or 'Untitled'
     content = data.get('content', '')
+    tags = ','.join(parse_tags(data.get('tags', '')))
     now = datetime.utcnow().isoformat()
     with get_db() as db:
         base_slug = slugify(title)
         slug = unique_slug(db, base_slug)
         db.execute(
-            'INSERT INTO posts (title, slug, content, created_at, updated_at) VALUES (?,?,?,?,?)',
-            (title, slug, content, now, now)
+            'INSERT INTO posts (title, slug, content, tags, created_at, updated_at) VALUES (?,?,?,?,?,?)',
+            (title, slug, content, tags, now, now)
         )
         db.commit()
         post = db.execute('SELECT * FROM posts WHERE slug = ?', (slug,)).fetchone()
@@ -113,14 +133,15 @@ def update_post(post_id):
     data = request.json
     title = (data.get('title') or '').strip() or 'Untitled'
     content = data.get('content', '')
+    tags = ','.join(parse_tags(data.get('tags', '')))
     now = datetime.utcnow().isoformat()
     with get_db() as db:
-        existing = db.execute('SELECT * FROM posts WHERE id = ?', (post_id,)).fetchone()
+        existing = db.execute('SELECT * FROM posts WHERE id = ? AND deleted_at IS NULL', (post_id,)).fetchone()
         if not existing:
             abort(404)
         db.execute(
-            'UPDATE posts SET title=?, content=?, updated_at=? WHERE id=?',
-            (title, content, now, post_id)
+            'UPDATE posts SET title=?, content=?, tags=?, updated_at=? WHERE id=?',
+            (title, content, tags, now, post_id)
         )
         db.commit()
         post = db.execute('SELECT * FROM posts WHERE id = ?', (post_id,)).fetchone()
@@ -128,8 +149,9 @@ def update_post(post_id):
 
 @app.route('/api/posts/<int:post_id>', methods=['DELETE'])
 def delete_post(post_id):
+    now = datetime.utcnow().isoformat()
     with get_db() as db:
-        db.execute('DELETE FROM posts WHERE id = ?', (post_id,))
+        db.execute('UPDATE posts SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL', (now, post_id))
         db.commit()
     return jsonify({'ok': True})
 

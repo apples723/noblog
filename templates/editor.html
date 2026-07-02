@@ -14,6 +14,14 @@
     value="{{ post['title'] if post else '' }}"
     autocomplete="off"
   >
+  <input
+    type="text"
+    class="tags-input"
+    id="post-tags"
+    placeholder="Tags (comma-separated)…"
+    value="{{ post['tags'] if post else '' }}"
+    autocomplete="off"
+  >
   <textarea id="editor">{{ post['content'] if post else '' }}</textarea>
   <div class="editor-footer">
     <div>
@@ -254,6 +262,7 @@
   // ── Save ─────────────────────────────────────────────────────────────────
   async function savePost() {
     const title = document.getElementById('post-title').value.trim() || 'Untitled';
+    const tags = document.getElementById('post-tags').value.trim();
     const content = getContent();
     const btn = document.getElementById('save-btn');
     btn.disabled = true;
@@ -265,13 +274,13 @@
         res = await fetch(`/api/posts/${POST_ID}`, {
           method: 'PUT',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ title, content })
+          body: JSON.stringify({ title, content, tags })
         });
       } else {
         res = await fetch('/api/posts', {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ title, content })
+          body: JSON.stringify({ title, content, tags })
         });
       }
       const data = await res.json();
