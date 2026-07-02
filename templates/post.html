@@ -7,7 +7,7 @@
 <div class="container">
   <div class="post-header">
     <h1 class="post-title">{{ post['title'] }}</h1>
-    <div class="post-date">{{ post['created_at'][:10] }}{% if post['updated_at'] != post['created_at'] %} &middot; edited {{ post['updated_at'][:10] }}{% endif %}</div>
+    <div class="post-date"><span class="has-tooltip" data-tooltip="{{ post['created_at'][:16] }}">{{ post['created_at'][:10] }}</span>{% if post['updated_at'] != post['created_at'] %} &middot; <span class="has-tooltip" data-tooltip="{{ post['updated_at'][:16] }}">edited {{ post['updated_at'][:10] }}</span>{% endif %}</div>
     {% if post['tags'] %}
     <div class="post-tags">
       {% for tag in post['tags'].split(',') %}

@@ -349,6 +349,59 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.filter-dropdown-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.toggle-check {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  width: 1rem;
+  text-align: center;
+  color: var(--muted);
+}
+.filter-dropdown-toggle.filter-dropdown-item:hover .toggle-check,
+.filter-dropdown-item .toggle-check { color: inherit; }
+
+/* Modified date inline */
+.modified-date {
+  color: var(--muted);
+  font-style: italic;
+}
+.modified-date.hidden {
+  display: none;
+}
+
+/* ── Custom tooltips ─────────────────────────────────────────────────────────── */
+.has-tooltip {
+  position: relative;
+  cursor: default;
+}
+.has-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.3rem 0.6rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  font-style: normal;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  z-index: 300;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.has-tooltip:hover::after {
+  opacity: 1;
+}
 
 .tag-pill {
   display: inline-block;

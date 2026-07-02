@@ -17,6 +17,10 @@
           <div class="filter-dropdown-label">Sort by</div>
           <button class="filter-dropdown-item active" data-sort="newest" type="button">Newest</button>
           <button class="filter-dropdown-item" data-sort="modified" type="button">Last modified</button>
+          <div class="filter-dropdown-divider"></div>
+          <button class="filter-dropdown-item filter-dropdown-toggle" data-action="toggle-modified-date" type="button">
+            <span class="toggle-check" id="show-modified-check">✗</span> Show modified date
+          </button>
         </div>
       </div>
     </div>
@@ -31,7 +35,7 @@
     <ul class="post-list" id="post-list">
       {% for post in posts %}
       <li class="post-item" data-tags="{{ post['tags'] }}" data-created="{{ post['created_at'] }}" data-updated="{{ post['updated_at'] }}">
-        <div class="post-item-meta">{{ post['created_at'][:10] }}</div>
+        <div class="post-item-meta"><span class="has-tooltip" data-tooltip="{{ post['created_at'][:16] }}">{{ post['created_at'][:10] }}</span><span class="modified-date hidden has-tooltip" data-tooltip="{{ post['updated_at'][:16] }}"> · modified: {{ post['updated_at'][:10] }}</span></div>
         <div class="post-item-title">
           <a href="/post/{{ post['slug'] }}">{{ post['title'] }}</a>
         </div>
@@ -73,6 +77,16 @@
 
   let selectedTags = new Set();
   let currentSort = 'newest';
+  let showModifiedDate = false;
+  const modifiedCheck = document.getElementById('show-modified-check');
+
+  function updateModifiedDateDisplay() {
+    const modSpans = postList.querySelectorAll('.modified-date');
+    modSpans.forEach(span => {
+      span.classList.toggle('hidden', !showModifiedDate);
+    });
+    modifiedCheck.textContent = showModifiedDate ? '✓' : '✗';
+  }
 
   // Toggle dropdown visibility
   toggle.addEventListener('click', (e) => {
@@ -104,11 +118,21 @@
       return;
     }
 
+    // Toggle modified date display
+    if (item.dataset.action === 'toggle-modified-date') {
+      showModifiedDate = !showModifiedDate;
+      updateModifiedDateDisplay();
+      return;
+    }
+
     // Sort action
     if (item.dataset.sort) {
       currentSort = item.dataset.sort;
       dropdown.querySelectorAll('[data-sort]').forEach(b => b.classList.remove('active'));
       item.classList.add('active');
+      // Auto-toggle modified date based on sort
+      showModifiedDate = (currentSort === 'modified');
+      updateModifiedDateDisplay();
       applySort();
       dropdown.classList.add('hidden');
       icon.textContent = '▼';
