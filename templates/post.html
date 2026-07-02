@@ -11,7 +11,7 @@
     {% if post['tags'] %}
     <div class="post-tags">
       {% for tag in post['tags'].split(',') %}
-      <a href="/?tag={{ tag }}" class="tag-pill">{{ tag }}</a>
+      <a href="/" class="tag-pill">{{ tag }}</a>
       {% endfor %}
     </div>
     {% endif %}

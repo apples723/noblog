@@ -2,19 +2,26 @@
 {% block title %}{{ blog_title }}{% endblock %}
 {% block content %}
 <div class="container">
-  {% if all_tags %}
-  <div class="tag-filter">
-    <a href="/" class="tag-pill{% if not active_tag %} active{% endif %}">All</a>
-    {% for tag in all_tags %}
-    <a href="/?tag={{ tag }}" class="tag-pill{% if active_tag == tag %} active{% endif %}">{{ tag }}</a>
-    {% endfor %}
-  </div>
-  {% endif %}
   {% if posts %}
-    <p class="page-heading"><span>{{ posts|length }}</span> entr{{ 'y' if posts|length == 1 else 'ies' }}{% if active_tag %} tagged <span>{{ active_tag }}</span>{% endif %}</p>
-    <ul class="post-list">
+    <div class="page-heading-row">
+      <p class="page-heading"><span id="visible-count">{{ posts|length }}</span> entr{{ 'y' if posts|length == 1 else 'ies' }}</p>
+      {% if all_tags %}
+      <button class="btn btn-ghost filter-toggle" id="filter-toggle" type="button">
+        <span id="filter-icon">▼</span> Filter
+      </button>
+      {% endif %}
+    </div>
+    {% if all_tags %}
+    <div class="tag-filter hidden" id="tag-filter">
+      <button class="tag-pill active" data-tag="__all__" type="button">All</button>
+      {% for tag in all_tags %}
+      <button class="tag-pill" data-tag="{{ tag }}" type="button">{{ tag }}</button>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <ul class="post-list" id="post-list">
       {% for post in posts %}
-      <li class="post-item">
+      <li class="post-item" data-tags="{{ post['tags'] }}">
         <div class="post-item-meta">{{ post['created_at'][:10] }}</div>
         <div class="post-item-title">
           <a href="/post/{{ post['slug'] }}">{{ post['title'] }}</a>
@@ -22,23 +29,92 @@
         {% if post['tags'] %}
         <div class="post-item-tags">
           {% for tag in post['tags'].split(',') %}
-          <a href="/?tag={{ tag }}" class="tag-pill small">{{ tag }}</a>
+          <span class="tag-pill small">{{ tag }}</span>
           {% endfor %}
         </div>
         {% endif %}
       </li>
       {% endfor %}
     </ul>
+    <div class="empty-state hidden" id="no-results">
+      <p>No posts match those tags.</p>
+      <button class="btn btn-ghost" id="clear-filter" type="button">Clear filter</button>
+    </div>
   {% else %}
     <div class="empty-state">
-      {% if active_tag %}
-        <p>No posts tagged "{{ active_tag }}".</p>
-        <a href="/" class="btn btn-ghost">Clear filter</a>
-      {% else %}
-        <p>No entries yet.</p>
-        <a href="/new" class="btn btn-primary">Write your first post</a>
-      {% endif %}
+      <p>No entries yet.</p>
+      <a href="/new" class="btn btn-primary">Write your first post</a>
     </div>
   {% endif %}
 </div>
+
+{% if posts and all_tags %}
+<script>
+(function() {
+  const toggle = document.getElementById('filter-toggle');
+  const filterBar = document.getElementById('tag-filter');
+  const icon = document.getElementById('filter-icon');
+  const postList = document.getElementById('post-list');
+  const items = Array.from(postList.querySelectorAll('.post-item'));
+  const countEl = document.getElementById('visible-count');
+  const noResults = document.getElementById('no-results');
+  const clearBtn = document.getElementById('clear-filter');
+  const pills = Array.from(filterBar.querySelectorAll('.tag-pill'));
+  const allPill = filterBar.querySelector('[data-tag="__all__"]');
+
+  let selectedTags = new Set();
+
+  // Toggle filter bar visibility
+  toggle.addEventListener('click', () => {
+    filterBar.classList.toggle('hidden');
+    icon.textContent = filterBar.classList.contains('hidden') ? '▼' : '▲';
+  });
+
+  // Filter logic
+  function applyFilter() {
+    let visible = 0;
+    items.forEach(item => {
+      const postTags = (item.dataset.tags || '').split(',').filter(Boolean);
+      const match = selectedTags.size === 0 || [...selectedTags].every(t => postTags.includes(t));
+      item.style.display = match ? '' : 'none';
+      if (match) visible++;
+    });
+    countEl.textContent = visible;
+    postList.style.display = visible ? '' : 'none';
+    noResults.classList.toggle('hidden', visible > 0);
+
+    // Update pill states
+    pills.forEach(p => {
+      if (p === allPill) {
+        p.classList.toggle('active', selectedTags.size === 0);
+      } else {
+        p.classList.toggle('active', selectedTags.has(p.dataset.tag));
+      }
+    });
+  }
+
+  filterBar.addEventListener('click', (e) => {
+    const pill = e.target.closest('.tag-pill');
+    if (!pill) return;
+
+    const tag = pill.dataset.tag;
+    if (tag === '__all__') {
+      selectedTags.clear();
+    } else {
+      if (selectedTags.has(tag)) {
+        selectedTags.delete(tag);
+      } else {
+        selectedTags.add(tag);
+      }
+    }
+    applyFilter();
+  });
+
+  clearBtn.addEventListener('click', () => {
+    selectedTags.clear();
+    applyFilter();
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

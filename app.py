@@ -78,7 +78,6 @@ def parse_tags(raw):
 
 @app.route('/')
 def index():
-    tag_filter = request.args.get('tag', '').strip().lower()
     with get_db() as db:
         posts = db.execute(
             'SELECT id, title, slug, tags, created_at FROM posts ORDER BY created_at DESC'
@@ -86,9 +85,7 @@ def index():
         all_tags = sorted(set(
             t for row in posts for t in parse_tags(row['tags'])
         ))
-    if tag_filter:
-        posts = [p for p in posts if tag_filter in parse_tags(p['tags'])]
-    return render_template('index.html', posts=posts, all_tags=all_tags, active_tag=tag_filter)
+    return render_template('index.html', posts=posts, all_tags=all_tags)
 
 @app.route('/post/<slug>')
 def view_post(slug):
