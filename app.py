@@ -39,10 +39,15 @@ def init_db():
                 title TEXT NOT NULL,
                 slug TEXT UNIQUE NOT NULL,
                 content TEXT NOT NULL,
+                tags TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         ''')
+        # Migrate: add tags column if missing (existing databases)
+        cols = [row[1] for row in db.execute('PRAGMA table_info(posts)').fetchall()]
+        if 'tags' not in cols:
+            db.execute("ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
         db.commit()
 
 def slugify(title):
@@ -63,13 +68,25 @@ def unique_slug(db, base_slug):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+def parse_tags(raw):
+    """Normalize a comma-separated tag string into sorted, deduplicated, lowercase list."""
+    if not raw:
+        return []
+    return sorted(set(t.strip().lower() for t in raw.split(',') if t.strip()))
+
 @app.route('/')
 def index():
+    tag_filter = request.args.get('tag', '').strip().lower()
     with get_db() as db:
         posts = db.execute(
-            'SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC'
+            'SELECT id, title, slug, tags, created_at FROM posts ORDER BY created_at DESC'
         ).fetchall()
-    return render_template('index.html', posts=posts)
+        all_tags = sorted(set(
+            t for row in posts for t in parse_tags(row['tags'])
+        ))
+    if tag_filter:
+        posts = [p for p in posts if tag_filter in parse_tags(p['tags'])]
+    return render_template('index.html', posts=posts, all_tags=all_tags, active_tag=tag_filter)
 
 @app.route('/post/<slug>')
 def view_post(slug):
@@ -96,13 +113,14 @@ def create_post():
     data = request.json
     title = (data.get('title') or '').strip() or 'Untitled'
     content = data.get('content', '')
+    tags = ','.join(parse_tags(data.get('tags', '')))
     now = datetime.utcnow().isoformat()
     with get_db() as db:
         base_slug = slugify(title)
         slug = unique_slug(db, base_slug)
         db.execute(
-            'INSERT INTO posts (title, slug, content, created_at, updated_at) VALUES (?,?,?,?,?)',
-            (title, slug, content, now, now)
+            'INSERT INTO posts (title, slug, content, tags, created_at, updated_at) VALUES (?,?,?,?,?,?)',
+            (title, slug, content, tags, now, now)
         )
         db.commit()
         post = db.execute('SELECT * FROM posts WHERE slug = ?', (slug,)).fetchone()
@@ -113,14 +131,15 @@ def update_post(post_id):
     data = request.json
     title = (data.get('title') or '').strip() or 'Untitled'
     content = data.get('content', '')
+    tags = ','.join(parse_tags(data.get('tags', '')))
     now = datetime.utcnow().isoformat()
     with get_db() as db:
         existing = db.execute('SELECT * FROM posts WHERE id = ?', (post_id,)).fetchone()
         if not existing:
             abort(404)
         db.execute(
-            'UPDATE posts SET title=?, content=?, updated_at=? WHERE id=?',
-            (title, content, now, post_id)
+            'UPDATE posts SET title=?, content=?, tags=?, updated_at=? WHERE id=?',
+            (title, content, tags, now, post_id)
         )
         db.commit()
         post = db.execute('SELECT * FROM posts WHERE id = ?', (post_id,)).fetchone()

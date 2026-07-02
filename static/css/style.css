@@ -234,6 +234,59 @@ body {
 
 .post-actions { display: flex; gap: 0.75rem; margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border); }
 
+/* ── Tags ────────────────────────────────────────────────────────────────────── */
+.tags-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  padding: 0.4rem 0 0.75rem;
+  margin-bottom: 1.5rem;
+  outline: none;
+}
+.tags-input::placeholder { color: var(--muted); }
+.tags-input:focus { border-bottom-color: var(--accent); }
+
+.tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tag-pill {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  color: var(--muted);
+  text-decoration: none;
+  transition: all 0.15s ease;
+  letter-spacing: 0.02em;
+}
+.tag-pill:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.tag-pill.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.tag-pill.small { font-size: 0.65rem; padding: 0.15rem 0.5rem; }
+
+.post-item-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.5rem; }
+
+.post-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+
 /* ── Empty state ────────────────────────────────────────────────────────────── */
 .empty-state {
   text-align: center;

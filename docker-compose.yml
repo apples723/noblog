@@ -6,7 +6,7 @@ services:
     ports:
       - "3001:5001"
     environment:
-      - BLOG_TITLE=Office Dungeon
+      - BLOG_TITLE=NoBlog
       - SPELL_CHECK=true
     volumes:
       - blog_uploads:/app/uploads
