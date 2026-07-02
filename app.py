@@ -9,6 +9,7 @@ app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 app.config['BLOG_TITLE'] = os.environ.get('BLOG_TITLE', 'My Blog')
 app.config['SPELL_CHECK'] = os.environ.get('SPELL_CHECK', '').lower() in ('1', 'true', 'yes')
+app.config['APP_VERSION'] = os.environ.get('APP_VERSION', 'dev')
 DB_PATH = os.path.join(os.path.dirname(__file__), 'instance', 'blog.db')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -21,6 +22,7 @@ def inject_globals():
     return {
         'blog_title': app.config['BLOG_TITLE'],
         'spell_check': app.config['SPELL_CHECK'],
+        'app_version': app.config['APP_VERSION'],
     }
 
 def allowed_file(filename):

@@ -8,6 +8,7 @@ services:
     environment:
       - BLOG_TITLE=NoBlog
       - SPELL_CHECK=true
+      - APP_VERSION=${APP_VERSION:-dev}
     volumes:
       - blog_uploads:/app/uploads
       - blog_db:/app/instance
