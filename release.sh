@@ -7,7 +7,7 @@ VERSION_FILE="relaseversion.txt"
 # ── Defaults ─────────────────────────────────────────────────────────────────
 DO_BUILD=false
 DO_PUSH=false
-DO_TAG=false
+DO_RELEASE=false
 VERSION=""
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
@@ -18,8 +18,10 @@ Usage: ./release.sh [flags]
 Flags:
   --build             Build the Docker image
   --push              Push the image to the registry
-  --tag               Git-tag the current commit with the version
+  --release           Official release: updates version file and git-tags the commit
+                      Requires --version/--tag in vX.Y.Z format
   --version <ver>     Version string (used as Docker tag and baked into image)
+  --tag <ver>         Alias for --version
                       If omitted, defaults to "latest-dev"
 
 Examples:
@@ -27,34 +29,31 @@ Examples:
       Build with tag "latest-dev"
 
   ./release.sh --build --version 1.2.0
-      Build with tag "1.2.0"
+      Build with tag "1.2.0" (no version file update)
 
-  ./release.sh --build --push --version 1.2.0
-      Build, tag, and push "1.2.0" + "latest"
+  ./release.sh --build --push --tag 1.2.0
+      Build and push "1.2.0" + "latest" (no version file update)
 
-  ./release.sh --push --tag --version 1.2.0
-      Push "1.2.0" and git-tag the commit
-
-  ./release.sh --build --push --tag --version 1.2.0
-      Full release: build, push, git-tag
+  ./release.sh --build --push --release --version 1.2.0
+      Full release: build, push, update version file, git-tag
 EOF
   exit 1
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --build)   DO_BUILD=true; shift ;;
-    --push)    DO_PUSH=true; shift ;;
-    --tag)     DO_TAG=true; shift ;;
-    --version) VERSION="$2"; shift 2 ;;
-    -h|--help) usage ;;
+    --build)           DO_BUILD=true; shift ;;
+    --push)            DO_PUSH=true; shift ;;
+    --release)         DO_RELEASE=true; shift ;;
+    --version|--tag)   VERSION="$2"; shift 2 ;;
+    -h|--help)         usage ;;
     *) echo "Unknown flag: $1"; usage ;;
   esac
 done
 
 # At least one action required
-if ! $DO_BUILD && ! $DO_PUSH && ! $DO_TAG; then
-  echo "Error: provide at least one of --build, --push, or --tag"
+if ! $DO_BUILD && ! $DO_PUSH && ! $DO_RELEASE; then
+  echo "Error: provide at least one of --build, --push, or --release"
   echo ""
   usage
 fi
@@ -64,8 +63,19 @@ if [[ -z "$VERSION" ]]; then
   VERSION="latest-dev"
 fi
 
+# Validate version format when releasing
+if $DO_RELEASE; then
+  if [[ -z "$VERSION" || "$VERSION" == "latest-dev" ]]; then
+    echo "Error: --release requires an explicit version (--version or --tag)"
+    exit 1
+  fi
+  if ! [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: --release requires version in vX.Y.Z format (got: $VERSION)"
+    exit 1
+  fi
+fi
+
 echo "Version: $VERSION"
-echo "$VERSION" > "$VERSION_FILE"
 
 # ── Build ────────────────────────────────────────────────────────────────────
 if $DO_BUILD; then
@@ -84,13 +94,22 @@ if $DO_PUSH; then
   echo "✓ Pushed $IMAGE:$VERSION"
 fi
 
-# ── Git tag ──────────────────────────────────────────────────────────────────
-if $DO_TAG; then
+# ── Release (version file + git tag) ────────────────────────────────────────
+if $DO_RELEASE; then
   echo ""
-  echo "Tagging git commit as v$VERSION ..."
-  git tag -a "v$VERSION" -m "Release $VERSION"
-  git push origin "v$VERSION"
-  echo "✓ Tagged v$VERSION"
+  echo "$VERSION" > "$VERSION_FILE"
+  echo "✓ Updated $VERSION_FILE → $VERSION"
+
+  # Ensure version has v prefix for git tag
+  GIT_TAG="$VERSION"
+  if [[ "$GIT_TAG" != v* ]]; then
+    GIT_TAG="v$VERSION"
+  fi
+
+  echo "Tagging git commit as $GIT_TAG ..."
+  git tag -a "$GIT_TAG" -m "Release $VERSION"
+  git push origin "$GIT_TAG"
+  echo "✓ Tagged $GIT_TAG"
 fi
 
 echo ""

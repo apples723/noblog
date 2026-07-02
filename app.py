@@ -43,13 +43,16 @@ def init_db():
                 content TEXT NOT NULL,
                 tags TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
             )
         ''')
-        # Migrate: add tags column if missing (existing databases)
+        # Migrate: add missing columns for existing databases
         cols = [row[1] for row in db.execute('PRAGMA table_info(posts)').fetchall()]
         if 'tags' not in cols:
             db.execute("ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
+        if 'deleted_at' not in cols:
+            db.execute("ALTER TABLE posts ADD COLUMN deleted_at TEXT")
         db.commit()
 
 def slugify(title):
@@ -80,7 +83,7 @@ def parse_tags(raw):
 def index():
     with get_db() as db:
         posts = db.execute(
-            'SELECT id, title, slug, tags, created_at FROM posts ORDER BY created_at DESC'
+            'SELECT id, title, slug, tags, created_at FROM posts WHERE deleted_at IS NULL ORDER BY created_at DESC'
         ).fetchall()
         all_tags = sorted(set(
             t for row in posts for t in parse_tags(row['tags'])
@@ -90,7 +93,7 @@ def index():
 @app.route('/post/<slug>')
 def view_post(slug):
     with get_db() as db:
-        post = db.execute('SELECT * FROM posts WHERE slug = ?', (slug,)).fetchone()
+        post = db.execute('SELECT * FROM posts WHERE slug = ? AND deleted_at IS NULL', (slug,)).fetchone()
     if not post:
         abort(404)
     return render_template('post.html', post=post)
@@ -102,7 +105,7 @@ def new_post():
 @app.route('/edit/<int:post_id>')
 def edit_post(post_id):
     with get_db() as db:
-        post = db.execute('SELECT * FROM posts WHERE id = ?', (post_id,)).fetchone()
+        post = db.execute('SELECT * FROM posts WHERE id = ? AND deleted_at IS NULL', (post_id,)).fetchone()
     if not post:
         abort(404)
     return render_template('editor.html', post=post)
@@ -133,7 +136,7 @@ def update_post(post_id):
     tags = ','.join(parse_tags(data.get('tags', '')))
     now = datetime.utcnow().isoformat()
     with get_db() as db:
-        existing = db.execute('SELECT * FROM posts WHERE id = ?', (post_id,)).fetchone()
+        existing = db.execute('SELECT * FROM posts WHERE id = ? AND deleted_at IS NULL', (post_id,)).fetchone()
         if not existing:
             abort(404)
         db.execute(
@@ -146,8 +149,9 @@ def update_post(post_id):
 
 @app.route('/api/posts/<int:post_id>', methods=['DELETE'])
 def delete_post(post_id):
+    now = datetime.utcnow().isoformat()
     with get_db() as db:
-        db.execute('DELETE FROM posts WHERE id = ?', (post_id,))
+        db.execute('UPDATE posts SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL', (now, post_id))
         db.commit()
     return jsonify({'ok': True})
 
