@@ -6,6 +6,7 @@
 {% endblock %}
 {% block content %}
 <div class="editor-wrap">
+
   <input
     type="text"
     class="title-input"
@@ -22,22 +23,32 @@
     value="{{ post['tags'] if post else '' }}"
     autocomplete="off"
   >
-  <textarea id="editor">{{ post['content'] if post else '' }}</textarea>
-  <div class="editor-footer">
-    <div>
-      <div class="upload-indicator" id="upload-indicator">Uploading image…</div>
-      <div class="paste-hint" id="paste-hint"><kbd>⌘V</kbd> / <kbd>Ctrl+V</kbd> to paste a screenshot</div>
-    </div>
     <div class="editor-actions">
       <a href="{% if post %}/post/{{ post['slug'] }}{% else %}/{% endif %}" class="btn btn-ghost">Cancel</a>
       <button class="btn btn-primary" id="save-btn" onclick="savePost()">
         {% if post %}Save changes{% else %}Publish{% endif %}
       </button>
     </div>
+  <textarea id="editor">{{ post['content'] if post else '' }}</textarea>
+  <div class="editor-footer">
+    <div>
+      <div class="upload-indicator" id="upload-indicator">Uploading image…</div>
+      <div class="paste-hint" id="paste-hint"><kbd>⌘V</kbd> / <kbd>Ctrl+V</kbd> to paste a screenshot</div>
+    </div>
+    
   </div>
 </div>
 
 <script>
+  // Set sticky offset for editor actions bar based on actual header height
+  (function() {
+    const header = document.querySelector('.site-header');
+    if (header) {
+      const h = header.offsetHeight;
+      document.documentElement.style.setProperty('--header-height', h + 'px');
+    }
+  })();
+
   const POST_ID = {{ post['id'] | tojson if post else 'null' }};
   const spellCheck = {{ spell_check | tojson }};
   const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
