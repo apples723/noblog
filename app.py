@@ -83,6 +83,14 @@ def unique_slug(db, base_slug):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+@app.errorhandler(404)
+def handle_404(error):
+    # API clients (e.g. DailyPad's proxy) expect JSON, not Flask's default HTML page,
+    # so a missing /api/ resource forwards a real 404 instead of collapsing into a 502.
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Not found'}), 404
+    return error, 404
+
 def parse_tags(raw):
     """Normalize a comma-separated tag string into sorted, deduplicated, lowercase list."""
     if not raw:
