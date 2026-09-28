@@ -1,4 +1,5 @@
 import os
+import hmac
 import uuid
 import sqlite3
 from datetime import datetime
@@ -10,7 +11,13 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 app.config['BLOG_TITLE'] = os.environ.get('BLOG_TITLE', 'My Blog')
 app.config['SPELL_CHECK'] = os.environ.get('SPELL_CHECK', '').lower() in ('1', 'true', 'yes')
 app.config['APP_VERSION'] = os.environ.get('APP_VERSION', 'dev')
-DB_PATH = os.path.join(os.path.dirname(__file__), 'instance', 'blog.db')
+# Shared bearer token guarding all mutation endpoints. Empty/unset = auth disabled
+# (open dev behavior). When set, NoBlog's own in-browser editor (templates/editor.html)
+# posts without a token and will receive 401 on save; enabling this effectively makes
+# an external client such as DailyPad the author. Building a NoBlog login/session
+# system is out of scope.
+NOBLOG_WRITE_TOKEN = os.environ.get('NOBLOG_WRITE_TOKEN', '')
+DB_PATH = os.environ.get('NOBLOG_DB_PATH') or os.path.join(os.path.dirname(__file__), 'instance', 'blog.db')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -28,6 +35,19 @@ def inject_globals():
         'app_version': app.config['APP_VERSION'],
         'readonly_mode': readonly,
     }
+
+def require_write_token():
+    """Guard for mutation endpoints. Returns None when auth is disabled or the
+    request carries the correct 'Authorization: Bearer <token>' header, otherwise
+    a Flask JSON 401 response. Uses a constant-time compare to avoid timing leaks."""
+    if not NOBLOG_WRITE_TOKEN:
+        return None
+    header = request.headers.get('Authorization', '')
+    presented = header[7:] if header.startswith('Bearer ') else ''
+    # Compare even a missing token so timing does not reveal whether a token was sent.
+    if not hmac.compare_digest(presented, NOBLOG_WRITE_TOKEN):
+        return jsonify({'error': 'Unauthorized'}), 401
+    return None
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -162,9 +182,25 @@ def api_get_post(slug):
         'updated_at': post['updated_at'],
     })
 
+def validate_post_body(data):
+    """Validate a decoded JSON post body. Returns a Flask JSON 400 response on
+    invalid input, otherwise None."""
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Invalid JSON body'}), 400
+    for field in ('title', 'content', 'tags'):
+        if field in data and data[field] is not None and not isinstance(data[field], str):
+            return jsonify({'error': 'title, content and tags must be strings'}), 400
+    return None
+
 @app.route('/api/posts', methods=['POST'])
 def create_post():
-    data = request.json
+    auth = require_write_token()
+    if auth is not None:
+        return auth
+    data = request.get_json(silent=True)
+    err = validate_post_body(data)
+    if err is not None:
+        return err
     title = (data.get('title') or '').strip() or 'Untitled'
     content = data.get('content', '')
     tags = ','.join(parse_tags(data.get('tags', '')))
@@ -182,7 +218,13 @@ def create_post():
 
 @app.route('/api/posts/<int:post_id>', methods=['PUT'])
 def update_post(post_id):
-    data = request.json
+    auth = require_write_token()
+    if auth is not None:
+        return auth
+    data = request.get_json(silent=True)
+    err = validate_post_body(data)
+    if err is not None:
+        return err
     title = (data.get('title') or '').strip() or 'Untitled'
     content = data.get('content', '')
     tags = ','.join(parse_tags(data.get('tags', '')))
@@ -201,6 +243,9 @@ def update_post(post_id):
 
 @app.route('/api/posts/<int:post_id>', methods=['DELETE'])
 def delete_post(post_id):
+    auth = require_write_token()
+    if auth is not None:
+        return auth
     now = datetime.utcnow().isoformat()
     with get_db() as db:
         db.execute('UPDATE posts SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL', (now, post_id))
@@ -209,6 +254,9 @@ def delete_post(post_id):
 
 @app.route('/upload', methods=['POST'])
 def upload_image():
+    auth = require_write_token()
+    if auth is not None:
+        return auth
     if 'image' not in request.files:
         return jsonify({'error': 'No file'}), 400
     file = request.files['image']
@@ -225,6 +273,9 @@ def uploaded_file(filename):
 
 @app.route('/api/settings/readonly', methods=['POST'])
 def toggle_readonly():
+    auth = require_write_token()
+    if auth is not None:
+        return auth
     with get_db() as db:
         row = db.execute("SELECT value FROM settings WHERE key = 'readonly'").fetchone()
         current = row['value'] == '1' if row else False

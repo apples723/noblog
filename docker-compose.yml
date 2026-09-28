@@ -9,6 +9,7 @@ services:
       - BLOG_TITLE=NoBlog
       - SPELL_CHECK=true
       - APP_VERSION=${APP_VERSION:-dev}
+      - NOBLOG_WRITE_TOKEN=${NOBLOG_WRITE_TOKEN:-}
     volumes:
       - blog_uploads:/app/uploads
       - blog_db:/app/instance
