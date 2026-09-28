@@ -83,6 +83,14 @@ def unique_slug(db, base_slug):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+@app.errorhandler(404)
+def handle_404(error):
+    # API clients (e.g. DailyPad's proxy) expect JSON, not Flask's default HTML page,
+    # so a missing /api/ resource forwards a real 404 instead of collapsing into a 502.
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Not found'}), 404
+    return error, 404
+
 def parse_tags(raw):
     """Normalize a comma-separated tag string into sorted, deduplicated, lowercase list."""
     if not raw:
@@ -119,6 +127,40 @@ def edit_post(post_id):
     if not post:
         abort(404)
     return render_template('editor.html', post=post)
+
+@app.route('/api/posts')
+def api_list_posts():
+    with get_db() as db:
+        posts = db.execute(
+            'SELECT id, title, slug, tags, created_at, updated_at FROM posts WHERE deleted_at IS NULL ORDER BY created_at DESC'
+        ).fetchall()
+    return jsonify([
+        {
+            'id': post['id'],
+            'title': post['title'],
+            'slug': post['slug'],
+            'tags': parse_tags(post['tags']),
+            'created_at': post['created_at'],
+            'updated_at': post['updated_at'],
+        }
+        for post in posts
+    ])
+
+@app.route('/api/posts/<slug>')
+def api_get_post(slug):
+    with get_db() as db:
+        post = db.execute('SELECT * FROM posts WHERE slug = ? AND deleted_at IS NULL', (slug,)).fetchone()
+    if not post:
+        abort(404)
+    return jsonify({
+        'id': post['id'],
+        'title': post['title'],
+        'slug': post['slug'],
+        'content': post['content'],
+        'tags': parse_tags(post['tags']),
+        'created_at': post['created_at'],
+        'updated_at': post['updated_at'],
+    })
 
 @app.route('/api/posts', methods=['POST'])
 def create_post():
