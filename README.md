@@ -38,7 +38,7 @@ Visit `http://localhost:5000`
 |----------------------|------------|--------------------------------------------------------------------|
 | `BLOG_TITLE`         | `My Blog`  | Site title in header                                               |
 | `NOBLOG_WRITE_TOKEN` | _(empty)_  | Shared secret protecting write endpoints; doubles as the password for the NoBlog UI login at `/login`. Empty = no auth. Generate it with `openssl rand -hex 32`. |
-| `NOBLOG_TRUST_PROXY` | _(empty)_  | Set to `1` when exactly one trusted reverse proxy fronts NoBlog and sets `X-Forwarded-For/Proto/Host`. Required for correct HTTPS cookies and origin checks behind a proxy. |
+| `NOBLOG_TRUST_PROXY` | _(empty)_  | Set to `1` when exactly one trusted reverse proxy fronts NoBlog and sets `X-Forwarded-For/Proto/Host`. Required, not optional, for any TLS-terminating deployment: without it the login cookie ships without `Secure` and cookie writes are rejected as cross-origin. NoBlog logs a warning when it detects either misconfiguration. |
 | `NOBLOG_DB_PATH`     | `instance/blog.db` | Override the SQLite database location (used mainly by tests).      |
 
 Set via `docker-compose.yml` under `environment`, or export before running locally.
@@ -68,14 +68,30 @@ redirected to `/login` with the original target in a `next` parameter, while
 hides the New Post, Edit, Delete and readonly-toggle controls until you are
 logged in.
 
+If the cookie expires mid-edit, the editor stashes the title, tags and body in
+`localStorage`, sends you to `/login?next=<the editor page>` and restores the draft
+when you land back there, so an expired session does not cost you a post. A stash
+only exists to survive that round-trip, so one older than 30 minutes is discarded
+instead of overwriting whatever the post says now.
+
 Cookie-authenticated mutations additionally require a same-host `Origin` (or
 `Referer`) header, so a third-party site cannot ride along on your session. The
 bearer path skips that check, since non-browser clients send neither header.
 
-`POST /login` throttles failed attempts per client address (5 failures, then HTTP
-`429` for a minute). That counter lives in process memory, so with multiple
-workers it slows a guessing run rather than stopping it: pick the token with
-`openssl rand -hex 32` instead of typing a passphrase, since it is now also a
+Failed credentials are throttled: after 5 failures from the same client, every
+further attempt waits a second before it is answered, and a wrong password gets
+HTTP `429` with `Retry-After`. The throttle deliberately delays rather than locks
+out, so a **correct** password still logs you in while it holds -- a burst of
+guesses cannot shut the operator out of their own UI. `POST /login` and the
+mutation endpoints share one counter, since they compare the same secret.
+
+Two limits worth knowing: the counter lives in process memory, so with multiple
+workers it slows a guessing run rather than stopping it; and it is keyed on the
+client address, which behind a reverse proxy is only per-visitor when
+`NOBLOG_TRUST_PROXY` is set (without it, NoBlog falls back to the untrusted
+`X-Forwarded-For` value so visitors are still counted separately, but that header
+is spoofable). Either way the real protection is token entropy: generate it with
+`openssl rand -hex 32` rather than typing a passphrase, since it is now also a
 password field on a public page.
 
 Leaving `NOBLOG_WRITE_TOKEN` unset disables auth entirely and NoBlog behaves
@@ -84,14 +100,20 @@ single shared secret for one operator, not per-user auth.
 
 #### Behind a reverse proxy
 
-Set `NOBLOG_TRUST_PROXY=1` when NoBlog runs behind exactly one proxy that
-terminates TLS. Without it Flask sees the proxy's scheme and hostname, so the auth
-cookie is issued without `Secure` on an HTTPS site and the same-host check compares
-the browser's `Origin` against an internal hostname, which makes every
-cookie-authenticated write fail with `403 Invalid origin`. The proxy must set
-`X-Forwarded-Proto` and `X-Forwarded-Host` (and `X-Forwarded-For`); do not enable
-the flag when NoBlog is reachable directly, because then those headers are
+If NoBlog runs behind a proxy that terminates TLS -- the usual production setup --
+`NOBLOG_TRUST_PROXY=1` is a **prerequisite**, not a tuning knob. Without it Flask
+sees the proxy's scheme and hostname, so the auth cookie is issued without `Secure`
+on an HTTPS site and the same-host check compares the browser's `Origin` against an
+internal hostname, which makes every cookie-authenticated write fail with
+`403 Invalid origin`. Set the flag when exactly one trusted proxy fronts NoBlog and
+sets `X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Forwarded-For`; do not set it
+when NoBlog is reachable directly, because then those headers are
 attacker-controlled.
+
+Neither mistake is silent. When a write token is configured NoBlog logs a warning
+(once per process) if it sees `X-Forwarded-*` headers while the flag is off, and if
+the flag is on but a request arrives without `X-Forwarded-Proto` -- both of which
+mean the login cookie is going out without `Secure`.
 
 #### Rotating the token
 

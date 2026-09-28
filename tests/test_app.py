@@ -2,6 +2,8 @@
 components (CRUD, soft-delete, readonly, tag/slug helpers)."""
 
 import io
+import logging
+import time
 from urllib.parse import unquote
 
 from conftest import TEST_TOKEN
@@ -450,18 +452,73 @@ def test_trusted_proxy_origin_check_uses_forwarded_host(client_proxy):
     assert bad.status_code == 403
 
 
-# ── Login throttling ──────────────────────────────────────────────────────────
+# ── Credential throttling ─────────────────────────────────────────────────────
 
-def test_login_locks_out_after_repeated_failures(client_token, app_module_token):
+def _burn_login_attempts(client, app_module, headers=None):
+    for _ in range(app_module.LOGIN_MAX_ATTEMPTS):
+        assert client.post(
+            '/login', data={'password': 'wrong'}, headers=headers or {}
+        ).status_code == 401
+
+
+def test_login_throttles_wrong_passwords_with_429(client_token, app_module_token):
+    app_module_token.AUTH_THROTTLE_DELAY = 0
+    _burn_login_attempts(client_token, app_module_token)
+
+    throttled = client_token.post('/login', data={'password': 'wrong'})
+    assert throttled.status_code == 429
+    assert throttled.headers['Retry-After'] == str(app_module_token.LOGIN_LOCKOUT_SECONDS)
+    assert 'Set-Cookie' not in throttled.headers
+
+
+def test_throttle_never_refuses_the_correct_password(client_token, app_module_token):
+    """The throttle is a delay, not a lockout: an attacker burst (which behind a proxy
+    may even share the operator's apparent address) must not keep the operator out."""
+    app_module_token.AUTH_THROTTLE_DELAY = 0
+    _burn_login_attempts(client_token, app_module_token)
+    assert client_token.post('/login', data={'password': 'wrong'}).status_code == 429
+
+    resp = client_token.post('/login', data={'password': TEST_TOKEN, 'next': '/new'})
+    assert resp.status_code == 302
+    assert resp.headers['Set-Cookie'].startswith('noblog_auth=')
+    assert client_token.get('/new').status_code == 200
+
+
+def test_throttled_attempt_is_delayed(client_token, app_module_token):
+    app_module_token.AUTH_THROTTLE_DELAY = 0.2
+    _burn_login_attempts(client_token, app_module_token)
+
+    started = time.monotonic()
+    assert client_token.post('/login', data={'password': TEST_TOKEN}).status_code == 302
+    assert time.monotonic() - started >= 0.2
+
+
+def test_throttle_is_per_forwarded_client_when_proxy_untrusted(client_token, app_module_token):
+    """Without NOBLOG_TRUST_PROXY every visitor shares remote_addr, so the counter
+    folds in the forwarded address as well; one noisy client must not spend another
+    client's budget."""
+    app_module_token.AUTH_THROTTLE_DELAY = 0
+    attacker = {'X-Forwarded-For': '203.0.113.9'}
+    _burn_login_attempts(client_token, app_module_token, headers=attacker)
+    assert client_token.post('/login', data={'password': 'wrong'}, headers=attacker).status_code == 429
+
+    other = {'X-Forwarded-For': '198.51.100.4'}
+    assert client_token.post('/login', data={'password': 'wrong'}, headers=other).status_code == 401
+
+
+def test_mutation_failures_feed_the_same_throttle(client_token, app_module_token):
+    """The API endpoints compare the same secret, so a guesser cannot get a fresh
+    budget just by moving from the login form to POST /api/posts."""
+    app_module_token.AUTH_THROTTLE_DELAY = 0
     for _ in range(app_module_token.LOGIN_MAX_ATTEMPTS):
-        assert client_token.post('/login', data={'password': 'wrong'}).status_code == 401
+        assert client_token.post('/api/posts', json={'title': 'X'}).status_code == 401
+    assert client_token.post('/login', data={'password': 'wrong'}).status_code == 429
 
-    locked = client_token.post('/login', data={'password': 'wrong'})
-    assert locked.status_code == 429
-    assert locked.headers['Retry-After'] == str(app_module_token.LOGIN_LOCKOUT_SECONDS)
-    # even the correct password is refused while the lockout holds
-    assert client_token.post('/login', data={'password': TEST_TOKEN}).status_code == 429
-    assert 'Set-Cookie' not in locked.headers
+    # a valid credential is never throttled, and clears the counter
+    assert client_token.post(
+        '/api/posts', json={'title': 'Proxy'}, headers=auth()
+    ).status_code == 200
+    assert app_module_token._login_failures == {}
 
 
 def test_successful_login_clears_failure_counter(client_token, app_module_token):
@@ -469,6 +526,32 @@ def test_successful_login_clears_failure_counter(client_token, app_module_token)
     assert app_module_token._login_failures
     assert client_token.post('/login', data={'password': TEST_TOKEN}).status_code == 302
     assert app_module_token._login_failures == {}
+
+
+# ── Proxy misconfiguration is announced, not silent ────────────────────────────
+
+def test_untrusted_forwarded_headers_log_a_warning(client_token, caplog):
+    with caplog.at_level(logging.WARNING):
+        assert client_token.get('/', headers={'X-Forwarded-Proto': 'https'}).status_code == 200
+    assert any('NOBLOG_TRUST_PROXY is not set' in r.getMessage() for r in caplog.records)
+
+
+def test_trusted_proxy_without_forwarded_proto_logs_a_warning(client_proxy, caplog):
+    with caplog.at_level(logging.WARNING):
+        assert client_proxy.get('/').status_code == 200
+    assert any('carried no X-Forwarded-Proto' in r.getMessage() for r in caplog.records)
+
+
+def test_correctly_configured_proxy_logs_nothing(client_proxy, caplog):
+    with caplog.at_level(logging.WARNING):
+        client_proxy.get('/', headers={'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'blog.example'})
+    assert not [r for r in caplog.records if 'X-Forwarded' in r.getMessage()]
+
+
+def test_open_mode_does_not_warn_about_proxies(client, caplog):
+    with caplog.at_level(logging.WARNING):
+        client.get('/', headers={'X-Forwarded-Proto': 'https'})
+    assert not [r for r in caplog.records if 'X-Forwarded' in r.getMessage()]
 
 
 # ── Template gating of write affordances ──────────────────────────────────────
@@ -510,16 +593,56 @@ def test_empty_state_write_link_is_gated(client_token, client_cookie):
     assert b'Write your first post' in client_cookie.get('/').data
 
 
-def test_auth_varying_html_is_not_shared_cacheable(client_token):
+def test_anonymous_html_varies_by_cookie_but_stays_cacheable(client_token):
+    """`Vary: Cookie` is what keeps a shared cache from handing one visitor's variant
+    to another; the public blog must not also become uncacheable just because the
+    operator enabled writes."""
     resp = client_token.get('/')
     assert 'Cookie' in resp.headers['Vary']
-    assert 'private' in resp.headers['Cache-Control']
+    assert 'private' not in resp.headers.get('Cache-Control', '')
     # JSON reads do not vary by credential
     assert 'Vary' not in client_token.get('/api/posts').headers
 
 
+def test_authenticated_html_is_marked_private(client_cookie):
+    resp = client_cookie.get('/')
+    assert 'Cookie' in resp.headers['Vary']
+    assert resp.headers['Cache-Control'] == 'private, no-cache'
+
+
 def test_open_mode_adds_no_cache_headers(client):
     assert 'Vary' not in client.get('/').headers
+
+
+# ── Draft rescue wiring (no JS harness in this repo, so assert on the markup) ───
+
+def test_editor_401_paths_stash_the_draft_and_carry_next(client_cookie):
+    page = client_cookie.get('/new').data.decode()
+    # both fetch call sites that can 401 (save and image upload) route through it
+    assert page.count('stashDraftAndLogin();') == 2
+    assert 'localStorage.setItem(DRAFT_KEY' in page
+    assert 'ts: Date.now(),' in page
+    # and the login hop carries this page as `next`
+    assert 'setTimeout(goToLogin, 900);' in page
+    assert "'/login?next=' + encodeURIComponent(next)" in page
+
+
+def test_draft_restore_applies_before_clearing_and_expires_stale_stashes(client_cookie):
+    page = client_cookie.get('/new').data.decode()
+    restore = page[page.index('DOMContentLoaded'):page.index('Restored your unsaved draft')]
+    # the stash is dropped only after the content has been applied
+    assert restore.index('setContent(draft.content)') < restore.rindex('localStorage.removeItem(DRAFT_KEY)')
+    # and an abandoned stash is discarded rather than overwriting the server's copy
+    assert 'draft.ts' in restore
+    assert 'DRAFT_MAX_AGE_MS' in restore
+
+
+def test_login_next_round_trips_percent_encoded_paths(client_token):
+    """goToLogin() percent-encodes the target, so /login must still recognise it as a
+    safe same-site path and put it back in the form."""
+    resp = client_token.get('/login?next=%2Fedit%2F5')
+    assert resp.status_code == 200
+    assert b'name="next" value="/edit/5"' in resp.data
 
 
 # ── Open mode (no token) is unchanged ─────────────────────────────────────────

@@ -24,12 +24,18 @@ app.config['APP_VERSION'] = os.environ.get('APP_VERSION', 'dev')
 NOBLOG_WRITE_TOKEN = os.environ.get('NOBLOG_WRITE_TOKEN', '')
 AUTH_COOKIE_NAME = 'noblog_auth'
 AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
-# Failed-login throttle for POST /login. In-memory and per-process, so it slows a
-# guessing run against the shared secret rather than stopping it; the token still
-# has to be password-grade random (see README).
+# Failed-credential throttle, shared by POST /login and the mutation endpoints (they
+# compare the same secret, so a guesser must not be able to simply change doors).
+# After LOGIN_MAX_ATTEMPTS failures inside the window every further attempt from the
+# same client waits AUTH_THROTTLE_DELAY seconds before it is answered. It is a delay
+# and not a refusal on purpose: a *correct* credential is still accepted while the
+# throttle holds, so a burst of wrong guesses can never lock the operator out of
+# their own UI. In-memory and per-process, so it slows a guessing run rather than
+# stopping it; the token still has to be password-grade random (see README).
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_LOCKOUT_SECONDS = 60
-_login_failures = {}  # remote address -> (failure count, lockout expiry from time.monotonic())
+AUTH_THROTTLE_DELAY = 1.0
+_login_failures = {}  # client key -> (failure count, window expiry from time.monotonic())
 DB_PATH = os.environ.get('NOBLOG_DB_PATH') or os.path.join(os.path.dirname(__file__), 'instance', 'blog.db')
 
 # Behind a reverse proxy Flask otherwise sees the proxy's scheme and host, which
@@ -40,6 +46,7 @@ DB_PATH = os.environ.get('NOBLOG_DB_PATH') or os.path.join(os.path.dirname(__fil
 TRUST_PROXY = os.environ.get('NOBLOG_TRUST_PROXY', '').lower() in ('1', 'true', 'yes')
 if TRUST_PROXY:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+_proxy_warnings_emitted = set()  # misconfiguration warnings are logged once per process
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -124,30 +131,59 @@ def require_write_token():
     if not NOBLOG_WRITE_TOKEN:
         return None
     if _bearer_ok():
+        _clear_auth_failures()
         return None
     if _cookie_ok():
         if not same_origin_ok():
             return jsonify({'error': 'Invalid origin'}), 403
+        _clear_auth_failures()
         return None
+    # These endpoints compare the same secret as the login form, so they feed the
+    # same throttle: guessing here is no faster than guessing at /login.
+    if _auth_throttled():
+        time.sleep(AUTH_THROTTLE_DELAY)
+    _record_auth_failure()
     return jsonify({'error': 'Unauthorized'}), 401
 
-def _login_locked():
-    """True when this client has used up LOGIN_MAX_ATTEMPTS failures and the lockout
-    window has not expired yet."""
-    count, expires = _login_failures.get(request.remote_addr, (0, 0.0))
+def _client_key():
+    """Identity for the credential throttle.
+
+    With NOBLOG_TRUST_PROXY enabled ProxyFix has already replaced remote_addr with
+    the address the trusted proxy forwarded, so that is the real client. Without it
+    remote_addr is the proxy's address for every visitor, which would collapse the
+    whole internet onto a single counter, so the (untrusted) first X-Forwarded-For
+    hop is folded in as well. That key is spoofable, meaning an attacker who rotates
+    the header earns a fresh budget -- but the throttle is a speed bump either way,
+    while a shared counter would let the same attacker slow down the operator's own
+    logins as collateral damage."""
+    addr = request.remote_addr or ''
+    if TRUST_PROXY:
+        return addr
+    forwarded = request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+    return f'{addr}|{forwarded}' if forwarded else addr
+
+def _auth_throttled():
+    """True when this client has used up LOGIN_MAX_ATTEMPTS failures and the window
+    has not expired yet. Callers delay, they do not refuse a correct credential."""
+    key = _client_key()
+    count, expires = _login_failures.get(key, (0, 0.0))
     if expires <= time.monotonic():
-        _login_failures.pop(request.remote_addr, None)
+        _login_failures.pop(key, None)
         return False
     return count >= LOGIN_MAX_ATTEMPTS
 
-def _record_login_failure():
+def _record_auth_failure():
     now = time.monotonic()
     # Drop expired entries so a guessing run cannot grow this dict without bound.
-    for addr, (_, expires) in list(_login_failures.items()):
+    for key, (_, expires) in list(_login_failures.items()):
         if expires <= now:
-            del _login_failures[addr]
-    count, expires = _login_failures.get(request.remote_addr, (0, 0.0))
-    _login_failures[request.remote_addr] = (count + 1, now + LOGIN_LOCKOUT_SECONDS)
+            del _login_failures[key]
+    key = _client_key()
+    count, _ = _login_failures.get(key, (0, 0.0))
+    _login_failures[key] = (count + 1, now + LOGIN_LOCKOUT_SECONDS)
+
+def _clear_auth_failures():
+    _login_failures.pop(_client_key(), None)
 
 def require_ui_auth():
     """Guard for HTML editor pages. Returns None when the visitor may write,
@@ -214,14 +250,49 @@ def unique_slug(db, base_slug):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+@app.before_request
+def warn_about_proxy_config():
+    """NOBLOG_TRUST_PROXY is a deployment prerequisite behind TLS termination, and
+    both ways of getting it wrong end with the auth cookie being issued without
+    Secure. Say so once per process instead of failing silently."""
+    if not NOBLOG_WRITE_TOKEN:
+        return  # no cookie is ever issued, so neither misconfiguration can bite
+    if TRUST_PROXY:
+        if request.headers.get('X-Forwarded-Proto'):
+            return
+        key = 'forwarded-proto-missing'
+        message = (
+            'NOBLOG_TRUST_PROXY is set but this request carried no X-Forwarded-Proto, '
+            'so NoBlog cannot tell it is behind HTTPS and the login cookie is issued '
+            'without Secure. Make the proxy send X-Forwarded-Proto, or unset '
+            'NOBLOG_TRUST_PROXY if NoBlog is reachable directly.'
+        )
+    elif request.headers.get('X-Forwarded-Proto') or request.headers.get('X-Forwarded-Host'):
+        key = 'forwarded-headers-untrusted'
+        message = (
+            'This request carried X-Forwarded-* headers but NOBLOG_TRUST_PROXY is not '
+            'set, so NoBlog sees the proxy scheme and host: the login cookie ships '
+            'without Secure and cookie-authenticated writes can be rejected as '
+            '403 Invalid origin. Set NOBLOG_TRUST_PROXY=1 when exactly one trusted '
+            'proxy fronts NoBlog.'
+        )
+    else:
+        return
+    if key not in _proxy_warnings_emitted:
+        _proxy_warnings_emitted.add(key)
+        app.logger.warning(message)
+
 @app.after_request
 def add_auth_cache_headers(response):
     """Once a token is configured, HTML pages render differently depending on the
     request's credential (write affordances present or absent), so tell shared
-    caches not to reuse one visitor's variant for another."""
+    caches to key on the cookie. Only a response that actually carries a session
+    gets `private, no-cache`; the cookie-less variant is the public blog and stays
+    cacheable for readers."""
     if NOBLOG_WRITE_TOKEN and response.mimetype == 'text/html':
         response.vary.add('Cookie')
-        response.headers.setdefault('Cache-Control', 'private, no-cache')
+        if request.cookies.get(AUTH_COOKIE_NAME):
+            response.headers.setdefault('Cache-Control', 'private, no-cache')
     return response
 
 @app.errorhandler(404)
@@ -292,17 +363,23 @@ def login():
         return render_template('login.html', next_target=target, error='Invalid origin'), 403
     if not NOBLOG_WRITE_TOKEN:
         return redirect(target)
-    if _login_locked():
-        locked = render_template(
-            'login.html', next_target=target, error='Too many attempts. Try again in a minute.'
-        )
-        return locked, 429, {'Retry-After': str(LOGIN_LOCKOUT_SECONDS)}
+    throttled = _auth_throttled()
+    if throttled:
+        # Slow the attempt down, but still evaluate it: the operator may be sharing an
+        # apparent address with whoever burned the budget.
+        time.sleep(AUTH_THROTTLE_DELAY)
     # Never log or echo the submitted password.
     if not hmac.compare_digest(request.form.get('password', ''), NOBLOG_WRITE_TOKEN):
-        _record_login_failure()
+        _record_auth_failure()
+        if throttled:
+            page = render_template(
+                'login.html', next_target=target,
+                error='Too many attempts. Try again in a minute.',
+            )
+            return page, 429, {'Retry-After': str(LOGIN_LOCKOUT_SECONDS)}
         return render_template('login.html', next_target=target, error='Incorrect password'), 401
 
-    _login_failures.pop(request.remote_addr, None)
+    _clear_auth_failures()
     response = redirect(target)
     response.set_cookie(
         AUTH_COOKIE_NAME,
