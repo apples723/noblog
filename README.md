@@ -78,16 +78,21 @@ Cookie-authenticated mutations additionally require a same-host `Origin` (or
 `Referer`) header, so a third-party site cannot ride along on your session. The
 bearer path skips that check, since non-browser clients send neither header.
 
-Failed credentials are throttled: after 5 failures from the same client, every
-further attempt waits a second before it is answered, and a wrong password gets
-HTTP `429` with `Retry-After`. The throttle deliberately delays rather than locks
-out, so a **correct** password still logs you in while it holds -- a burst of
-guesses cannot shut the operator out of their own UI. `POST /login` and the
-mutation endpoints share one counter, since they compare the same secret.
+Failed credentials are throttled: after 5 failures from the same client, a further
+**wrong** credential is turned away with HTTP `429` and `Retry-After` -- the login
+page on `POST /login`, `{"error": "Too many attempts"}` on the mutation endpoints,
+which otherwise keep answering `401 {"error": "Unauthorized"}`. A **correct**
+credential is always checked first, so it still logs you in (or publishes) while
+the throttle holds and resets the counter: a burst of guesses cannot shut the
+operator out of their own UI, and cannot slow down DailyPad's publish proxy.
+Throttled answers are immediate; NoBlog never delays a response server-side, so an
+anonymous caller cannot tie up request-handling threads by guessing. `POST /login`
+and the mutation endpoints share one counter, since they compare the same secret.
 
-Two limits worth knowing: the counter lives in process memory, so with multiple
-workers it slows a guessing run rather than stopping it; and it is keyed on the
-client address, which behind a reverse proxy is only per-visitor when
+Two limits worth knowing: the counter lives in process memory (pruned each failure
+and capped at 1024 entries), so with multiple workers it slows a guessing run
+rather than stopping it; and it is keyed on the client address, which behind a
+reverse proxy is only per-visitor when
 `NOBLOG_TRUST_PROXY` is set (without it, NoBlog falls back to the untrusted
 `X-Forwarded-For` value so visitors are still counted separately, but that header
 is spoofable). Either way the real protection is token entropy: generate it with

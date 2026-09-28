@@ -26,15 +26,18 @@ AUTH_COOKIE_NAME = 'noblog_auth'
 AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 # Failed-credential throttle, shared by POST /login and the mutation endpoints (they
 # compare the same secret, so a guesser must not be able to simply change doors).
-# After LOGIN_MAX_ATTEMPTS failures inside the window every further attempt from the
-# same client waits AUTH_THROTTLE_DELAY seconds before it is answered. It is a delay
-# and not a refusal on purpose: a *correct* credential is still accepted while the
-# throttle holds, so a burst of wrong guesses can never lock the operator out of
-# their own UI. In-memory and per-process, so it slows a guessing run rather than
+# After LOGIN_MAX_ATTEMPTS failures inside the window, a further *wrong* credential
+# from the same client is answered 429 immediately. Two properties on purpose:
+#   - a *correct* credential is still accepted while the throttle holds (it is
+#     checked first and clears the counter), so a burst of wrong guesses can never
+#     lock the operator out of their own UI or stall DailyPad's publish proxy;
+#   - the throttled answer is immediate, never a server-side sleep, so a client with
+#     no credential at all cannot pin a request-handling thread per request.
+# In-memory and per-process, so it slows unsophisticated guessing rather than
 # stopping it; the token still has to be password-grade random (see README).
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_LOCKOUT_SECONDS = 60
-AUTH_THROTTLE_DELAY = 1.0
+MAX_TRACKED_CLIENTS = 1024  # hard cap on _login_failures entries; see _record_auth_failure
 _login_failures = {}  # client key -> (failure count, window expiry from time.monotonic())
 DB_PATH = os.environ.get('NOBLOG_DB_PATH') or os.path.join(os.path.dirname(__file__), 'instance', 'blog.db')
 
@@ -125,7 +128,8 @@ def is_safe_redirect(target):
 def require_write_token():
     """Guard for mutation endpoints. Returns None when auth is disabled, the request
     carries the correct bearer token, or it carries a valid auth cookie from this
-    origin; otherwise a Flask JSON error response tuple. The bearer path deliberately
+    origin; otherwise a Flask JSON error response tuple: 401 {'error': 'Unauthorized'},
+    or 429 once this client has spent its failure budget. The bearer path deliberately
     short-circuits before the CSRF check so server-to-server clients, which send no
     Origin header, are unaffected. Compares are constant-time."""
     if not NOBLOG_WRITE_TOKEN:
@@ -139,10 +143,17 @@ def require_write_token():
         _clear_auth_failures()
         return None
     # These endpoints compare the same secret as the login form, so they feed the
-    # same throttle: guessing here is no faster than guessing at /login.
-    if _auth_throttled():
-        time.sleep(AUTH_THROTTLE_DELAY)
+    # same throttle: guessing here is no faster than guessing at /login. A throttled
+    # client is answered immediately -- delaying the answer would only let a client
+    # with no credential hold a request-handling thread, since every valid credential
+    # has already returned above.
+    throttled = _auth_throttled()
     _record_auth_failure()
+    if throttled:
+        return (
+            jsonify({'error': 'Too many attempts'}), 429,
+            {'Retry-After': str(LOGIN_LOCKOUT_SECONDS)},
+        )
     return jsonify({'error': 'Unauthorized'}), 401
 
 def _client_key():
@@ -164,7 +175,8 @@ def _client_key():
 
 def _auth_throttled():
     """True when this client has used up LOGIN_MAX_ATTEMPTS failures and the window
-    has not expired yet. Callers delay, they do not refuse a correct credential."""
+    has not expired yet. Callers check a presented credential first, so a correct one
+    is never refused; only a wrong one is answered 429."""
     key = _client_key()
     count, expires = _login_failures.get(key, (0, 0.0))
     if expires <= time.monotonic():
@@ -174,13 +186,21 @@ def _auth_throttled():
 
 def _record_auth_failure():
     now = time.monotonic()
-    # Drop expired entries so a guessing run cannot grow this dict without bound.
+    # Drop expired entries, then enforce a hard cap, so this dict cannot grow without
+    # bound. Pruning alone would not be enough: without NOBLOG_TRUST_PROXY the key
+    # includes a value the caller picks (see _client_key), so a guessing run that
+    # rotates X-Forwarded-For could otherwise hold one live entry per spoofed address
+    # for a whole window. Past the cap the oldest entries are evicted instead -- the
+    # caller's own entry is never the one dropped, so rotating the header cannot
+    # evict the attacker's way out of being throttled on a key it reuses.
     for key, (_, expires) in list(_login_failures.items()):
         if expires <= now:
             del _login_failures[key]
     key = _client_key()
     count, _ = _login_failures.get(key, (0, 0.0))
     _login_failures[key] = (count + 1, now + LOGIN_LOCKOUT_SECONDS)
+    while len(_login_failures) > MAX_TRACKED_CLIENTS:
+        del _login_failures[next(k for k in _login_failures if k != key)]
 
 def _clear_auth_failures():
     _login_failures.pop(_client_key(), None)
@@ -363,11 +383,11 @@ def login():
         return render_template('login.html', next_target=target, error='Invalid origin'), 403
     if not NOBLOG_WRITE_TOKEN:
         return redirect(target)
+    # Evaluate the attempt even while throttled: the operator may be sharing an
+    # apparent address with whoever burned the budget, so a correct password logs in
+    # regardless. Only a wrong one is turned away, and immediately -- never after a
+    # sleep, which would hold a request-handling thread for an anonymous caller.
     throttled = _auth_throttled()
-    if throttled:
-        # Slow the attempt down, but still evaluate it: the operator may be sharing an
-        # apparent address with whoever burned the budget.
-        time.sleep(AUTH_THROTTLE_DELAY)
     # Never log or echo the submitted password.
     if not hmac.compare_digest(request.form.get('password', ''), NOBLOG_WRITE_TOKEN):
         _record_auth_failure()

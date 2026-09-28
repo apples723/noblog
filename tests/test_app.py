@@ -462,7 +462,6 @@ def _burn_login_attempts(client, app_module, headers=None):
 
 
 def test_login_throttles_wrong_passwords_with_429(client_token, app_module_token):
-    app_module_token.AUTH_THROTTLE_DELAY = 0
     _burn_login_attempts(client_token, app_module_token)
 
     throttled = client_token.post('/login', data={'password': 'wrong'})
@@ -472,9 +471,9 @@ def test_login_throttles_wrong_passwords_with_429(client_token, app_module_token
 
 
 def test_throttle_never_refuses_the_correct_password(client_token, app_module_token):
-    """The throttle is a delay, not a lockout: an attacker burst (which behind a proxy
-    may even share the operator's apparent address) must not keep the operator out."""
-    app_module_token.AUTH_THROTTLE_DELAY = 0
+    """The throttle refuses wrong credentials only: an attacker burst (which behind a
+    proxy may even share the operator's apparent address) must not keep the operator
+    out."""
     _burn_login_attempts(client_token, app_module_token)
     assert client_token.post('/login', data={'password': 'wrong'}).status_code == 429
 
@@ -484,20 +483,56 @@ def test_throttle_never_refuses_the_correct_password(client_token, app_module_to
     assert client_token.get('/new').status_code == 200
 
 
-def test_throttled_attempt_is_delayed(client_token, app_module_token):
-    app_module_token.AUTH_THROTTLE_DELAY = 0.2
+def test_throttled_requests_are_answered_immediately(client_token, app_module_token):
+    """The throttle must never sleep on the server: a caller with no credential at all
+    could otherwise hold one request-handling thread per request (app.py runs Flask's
+    threaded server). Every throttled answer -- login form and mutation endpoint alike
+    -- is immediate, and a correct credential is never delayed either."""
     _burn_login_attempts(client_token, app_module_token)
 
     started = time.monotonic()
+    assert client_token.post('/login', data={'password': 'wrong'}).status_code == 429
+    assert client_token.post('/api/posts', json={'title': 'X'}).status_code == 429
     assert client_token.post('/login', data={'password': TEST_TOKEN}).status_code == 302
-    assert time.monotonic() - started >= 0.2
+    assert time.monotonic() - started < 0.5
+
+
+def test_throttled_mutation_returns_429_and_leaves_plain_401_alone(client_token, app_module_token):
+    """An ordinary unauthenticated mutation keeps the JSON 401 shape DailyPad's proxy
+    and the editor expect; only a client past its budget is switched to 429."""
+    for _ in range(app_module_token.LOGIN_MAX_ATTEMPTS):
+        unauth = client_token.post('/api/posts', json={'title': 'X'})
+        assert unauth.status_code == 401
+        assert unauth.get_json() == {'error': 'Unauthorized'}
+
+    throttled = client_token.post('/api/posts', json={'title': 'X'})
+    assert throttled.status_code == 429
+    assert throttled.headers['Retry-After'] == str(app_module_token.LOGIN_LOCKOUT_SECONDS)
+
+    # DailyPad's publish path presents the bearer token and is unaffected by the budget
+    assert client_token.post('/api/posts', json={'title': 'Proxy'}, headers=auth()).status_code == 200
+
+
+def test_failure_counter_cannot_grow_without_bound(client_token, app_module_token):
+    """Pruning expired windows is not enough to bound the counter: without
+    NOBLOG_TRUST_PROXY its key folds in a caller-chosen X-Forwarded-For hop, so a run
+    that rotates the header would hold one live entry per spoofed address. The hard cap
+    evicts the oldest instead, keeping the caller's own (current) entry."""
+    app_module_token.MAX_TRACKED_CLIENTS = 8
+    for octet in range(40):
+        assert client_token.post(
+            '/login', data={'password': 'wrong'},
+            headers={'X-Forwarded-For': f'203.0.113.{octet}'},
+        ).status_code == 401
+
+    assert len(app_module_token._login_failures) == 8
+    assert any(key.endswith('|203.0.113.39') for key in app_module_token._login_failures)
 
 
 def test_throttle_is_per_forwarded_client_when_proxy_untrusted(client_token, app_module_token):
     """Without NOBLOG_TRUST_PROXY every visitor shares remote_addr, so the counter
     folds in the forwarded address as well; one noisy client must not spend another
     client's budget."""
-    app_module_token.AUTH_THROTTLE_DELAY = 0
     attacker = {'X-Forwarded-For': '203.0.113.9'}
     _burn_login_attempts(client_token, app_module_token, headers=attacker)
     assert client_token.post('/login', data={'password': 'wrong'}, headers=attacker).status_code == 429
@@ -509,7 +544,6 @@ def test_throttle_is_per_forwarded_client_when_proxy_untrusted(client_token, app
 def test_mutation_failures_feed_the_same_throttle(client_token, app_module_token):
     """The API endpoints compare the same secret, so a guesser cannot get a fresh
     budget just by moving from the login form to POST /api/posts."""
-    app_module_token.AUTH_THROTTLE_DELAY = 0
     for _ in range(app_module_token.LOGIN_MAX_ATTEMPTS):
         assert client_token.post('/api/posts', json={'title': 'X'}).status_code == 401
     assert client_token.post('/login', data={'password': 'wrong'}).status_code == 429
