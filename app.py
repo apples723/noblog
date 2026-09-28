@@ -1,10 +1,12 @@
 import os
 import hmac
+import time
 import uuid
 import sqlite3
 from datetime import datetime
 from urllib.parse import urlsplit
 from flask import Flask, request, jsonify, render_template, redirect, url_for, abort, send_from_directory
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
@@ -22,7 +24,22 @@ app.config['APP_VERSION'] = os.environ.get('APP_VERSION', 'dev')
 NOBLOG_WRITE_TOKEN = os.environ.get('NOBLOG_WRITE_TOKEN', '')
 AUTH_COOKIE_NAME = 'noblog_auth'
 AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+# Failed-login throttle for POST /login. In-memory and per-process, so it slows a
+# guessing run against the shared secret rather than stopping it; the token still
+# has to be password-grade random (see README).
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_LOCKOUT_SECONDS = 60
+_login_failures = {}  # remote address -> (failure count, lockout expiry from time.monotonic())
 DB_PATH = os.environ.get('NOBLOG_DB_PATH') or os.path.join(os.path.dirname(__file__), 'instance', 'blog.db')
+
+# Behind a reverse proxy Flask otherwise sees the proxy's scheme and host, which
+# would issue the auth cookie without Secure on a TLS-terminated site and make the
+# same-origin check below compare the browser's Origin against an internal
+# hostname. Set NOBLOG_TRUST_PROXY=1 only when exactly one trusted proxy sets
+# X-Forwarded-For/Proto/Host (werkzeug ships with Flask, so this is no new dep).
+TRUST_PROXY = os.environ.get('NOBLOG_TRUST_PROXY', '').lower() in ('1', 'true', 'yes')
+if TRUST_PROXY:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -68,7 +85,16 @@ def same_origin_ok():
     neither header is present we accept: browsers always send at least one on
     cross-site form posts and fetch, SameSite=Strict already withholds the cookie
     cross-site, and non-browser clients (which send neither) authenticate with the
-    bearer token instead, which never reaches this check."""
+    bearer token instead, which never reaches this check.
+
+    Failing closed on the header-less case would not buy anything here: the cookie
+    value *is* NOBLOG_WRITE_TOKEN, so a client holding a stolen cookie can simply
+    replay it as 'Authorization: Bearer <token>' and bypass this function entirely.
+    The check exists to stop a third-party *page* from riding an authenticated
+    browser session, and for that Origin/Referer is always present.
+
+    Host comparison uses request.host, which reflects X-Forwarded-Host only when
+    NOBLOG_TRUST_PROXY is enabled."""
     origin = request.headers.get('Origin')
     if origin:
         return urlsplit(origin).netloc == request.host
@@ -104,6 +130,24 @@ def require_write_token():
             return jsonify({'error': 'Invalid origin'}), 403
         return None
     return jsonify({'error': 'Unauthorized'}), 401
+
+def _login_locked():
+    """True when this client has used up LOGIN_MAX_ATTEMPTS failures and the lockout
+    window has not expired yet."""
+    count, expires = _login_failures.get(request.remote_addr, (0, 0.0))
+    if expires <= time.monotonic():
+        _login_failures.pop(request.remote_addr, None)
+        return False
+    return count >= LOGIN_MAX_ATTEMPTS
+
+def _record_login_failure():
+    now = time.monotonic()
+    # Drop expired entries so a guessing run cannot grow this dict without bound.
+    for addr, (_, expires) in list(_login_failures.items()):
+        if expires <= now:
+            del _login_failures[addr]
+    count, expires = _login_failures.get(request.remote_addr, (0, 0.0))
+    _login_failures[request.remote_addr] = (count + 1, now + LOGIN_LOCKOUT_SECONDS)
 
 def require_ui_auth():
     """Guard for HTML editor pages. Returns None when the visitor may write,
@@ -169,6 +213,16 @@ def unique_slug(db, base_slug):
     return slug
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.after_request
+def add_auth_cache_headers(response):
+    """Once a token is configured, HTML pages render differently depending on the
+    request's credential (write affordances present or absent), so tell shared
+    caches not to reuse one visitor's variant for another."""
+    if NOBLOG_WRITE_TOKEN and response.mimetype == 'text/html':
+        response.vary.add('Cookie')
+        response.headers.setdefault('Cache-Control', 'private, no-cache')
+    return response
 
 @app.errorhandler(404)
 def handle_404(error):
@@ -238,10 +292,17 @@ def login():
         return render_template('login.html', next_target=target, error='Invalid origin'), 403
     if not NOBLOG_WRITE_TOKEN:
         return redirect(target)
+    if _login_locked():
+        locked = render_template(
+            'login.html', next_target=target, error='Too many attempts. Try again in a minute.'
+        )
+        return locked, 429, {'Retry-After': str(LOGIN_LOCKOUT_SECONDS)}
     # Never log or echo the submitted password.
     if not hmac.compare_digest(request.form.get('password', ''), NOBLOG_WRITE_TOKEN):
+        _record_login_failure()
         return render_template('login.html', next_target=target, error='Incorrect password'), 401
 
+    _login_failures.pop(request.remote_addr, None)
     response = redirect(target)
     response.set_cookie(
         AUTH_COOKIE_NAME,

@@ -365,6 +365,163 @@ def test_same_origin_cookie_mutation_is_allowed(client_cookie):
     assert resp.status_code == 200
 
 
+def test_referer_fallback_allows_same_host_and_rejects_other_hosts(client_cookie):
+    same_host = client_cookie.post(
+        '/api/posts', json={'title': 'Referer'}, headers={'Referer': 'http://localhost/new'}
+    )
+    assert same_host.status_code == 200
+
+    cross_host = client_cookie.post(
+        '/api/posts', json={'title': 'Referer'}, headers={'Referer': 'http://evil.example/page'}
+    )
+    assert cross_host.status_code == 403
+    assert cross_host.get_json()['error'] == 'Invalid origin'
+
+
+def test_cookie_mutation_without_origin_or_referer_is_allowed(client_cookie):
+    """Documents the deliberate fail-open when neither header is present: browsers
+    always send one, and a non-browser client holding the cookie could replay the
+    same value as a bearer token anyway, so failing closed would add no protection."""
+    assert client_cookie.post('/api/posts', json={'title': 'No headers'}).status_code == 200
+
+
+def test_cross_origin_login_is_403(client_token):
+    resp = client_token.post(
+        '/login', data={'password': TEST_TOKEN}, headers={'Origin': 'http://evil.example'}
+    )
+    assert resp.status_code == 403
+    assert 'Set-Cookie' not in resp.headers
+
+
+def test_cross_origin_logout_is_403(client_cookie):
+    resp = client_cookie.post('/logout', headers={'Origin': 'http://evil.example'})
+    assert resp.status_code == 403
+    assert resp.get_json()['error'] == 'Invalid origin'
+    # the cookie survives, so the session is untouched
+    assert client_cookie.post('/api/posts', json={'title': 'Still logged in'}).status_code == 200
+
+
+# ── Reverse-proxy awareness (NOBLOG_TRUST_PROXY) ───────────────────────────────
+
+def test_forwarded_headers_ignored_without_trust_proxy(client_token):
+    """Default deployment: forwarded headers are untrusted, so a spoofed
+    X-Forwarded-Host cannot satisfy the origin check."""
+    resp = client_token.post(
+        '/login',
+        data={'password': TEST_TOKEN},
+        headers={'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'blog.example'},
+    )
+    assert resp.status_code == 302
+    assert 'Secure' not in resp.headers['Set-Cookie']
+
+
+def test_trusted_proxy_marks_cookie_secure(client_proxy):
+    resp = client_proxy.post(
+        '/login',
+        data={'password': TEST_TOKEN},
+        headers={
+            'X-Forwarded-Proto': 'https',
+            'X-Forwarded-Host': 'blog.example',
+            'Origin': 'https://blog.example',
+        },
+    )
+    assert resp.status_code == 302
+    set_cookie = resp.headers['Set-Cookie']
+    assert 'Secure' in set_cookie
+    assert 'HttpOnly' in set_cookie
+    assert 'SameSite=Strict' in set_cookie
+
+
+def test_trusted_proxy_origin_check_uses_forwarded_host(client_proxy):
+    client_proxy.set_cookie('noblog_auth', TEST_TOKEN)
+    forwarded = {'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'blog.example'}
+
+    ok = client_proxy.post(
+        '/api/posts', json={'title': 'Behind proxy'},
+        headers={**forwarded, 'Origin': 'https://blog.example'},
+    )
+    assert ok.status_code == 200
+
+    # the proxy's own internal hostname is not the browser-visible origin
+    bad = client_proxy.post(
+        '/api/posts', json={'title': 'Behind proxy'},
+        headers={**forwarded, 'Origin': 'http://localhost'},
+    )
+    assert bad.status_code == 403
+
+
+# ── Login throttling ──────────────────────────────────────────────────────────
+
+def test_login_locks_out_after_repeated_failures(client_token, app_module_token):
+    for _ in range(app_module_token.LOGIN_MAX_ATTEMPTS):
+        assert client_token.post('/login', data={'password': 'wrong'}).status_code == 401
+
+    locked = client_token.post('/login', data={'password': 'wrong'})
+    assert locked.status_code == 429
+    assert locked.headers['Retry-After'] == str(app_module_token.LOGIN_LOCKOUT_SECONDS)
+    # even the correct password is refused while the lockout holds
+    assert client_token.post('/login', data={'password': TEST_TOKEN}).status_code == 429
+    assert 'Set-Cookie' not in locked.headers
+
+
+def test_successful_login_clears_failure_counter(client_token, app_module_token):
+    client_token.post('/login', data={'password': 'wrong'})
+    assert app_module_token._login_failures
+    assert client_token.post('/login', data={'password': TEST_TOKEN}).status_code == 302
+    assert app_module_token._login_failures == {}
+
+
+# ── Template gating of write affordances ──────────────────────────────────────
+
+def test_write_affordances_hidden_when_unauthenticated(client_token):
+    slug = client_token.post(
+        '/api/posts', json={'title': 'Gated post'}, headers=auth()
+    ).get_json()['slug']
+
+    home = client_token.get('/')
+    assert home.status_code == 200
+    assert b'href="/new"' not in home.data
+    assert b'id="readonly-toggle"' not in home.data
+    assert b'action="/logout"' not in home.data
+    assert b'href="/login"' in home.data
+
+    post_page = client_token.get(f'/post/{slug}')
+    assert post_page.status_code == 200
+    assert b'href="/edit/' not in post_page.data
+    assert b'onclick="deletePost(' not in post_page.data
+
+
+def test_write_affordances_visible_when_authenticated(client_cookie):
+    slug = client_cookie.post('/api/posts', json={'title': 'Gated post'}).get_json()['slug']
+
+    home = client_cookie.get('/')
+    assert b'href="/new"' in home.data
+    assert b'id="readonly-toggle"' in home.data
+    assert b'action="/logout"' in home.data
+    assert b'href="/login"' not in home.data
+
+    post_page = client_cookie.get(f'/post/{slug}')
+    assert b'href="/edit/' in post_page.data
+    assert b'onclick="deletePost(' in post_page.data
+
+
+def test_empty_state_write_link_is_gated(client_token, client_cookie):
+    assert b'Write your first post' not in client_token.get('/').data
+    assert b'Write your first post' in client_cookie.get('/').data
+
+
+def test_auth_varying_html_is_not_shared_cacheable(client_token):
+    resp = client_token.get('/')
+    assert 'Cookie' in resp.headers['Vary']
+    assert 'private' in resp.headers['Cache-Control']
+    # JSON reads do not vary by credential
+    assert 'Vary' not in client_token.get('/api/posts').headers
+
+
+def test_open_mode_adds_no_cache_headers(client):
+    assert 'Vary' not in client.get('/').headers
+
+
 # ── Open mode (no token) is unchanged ─────────────────────────────────────────
 
 def test_open_mode_allows_every_mutation_and_editor_pages(client):

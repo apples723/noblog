@@ -9,16 +9,21 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _load_app(tmp_path, token=None):
+def _load_app(tmp_path, token=None, trust_proxy=False):
     """Reload the app module with a fresh temp DB (and optional write token).
 
-    app.py reads DB_PATH and NOBLOG_WRITE_TOKEN at import time, so env vars must
-    be set before importlib.reload runs to get clean module state per test."""
+    app.py reads DB_PATH, NOBLOG_WRITE_TOKEN and NOBLOG_TRUST_PROXY at import time,
+    so env vars must be set before importlib.reload runs to get clean module state
+    per test."""
     os.environ['NOBLOG_DB_PATH'] = str(tmp_path / 'blog.db')
     if token is None:
         os.environ.pop('NOBLOG_WRITE_TOKEN', None)
     else:
         os.environ['NOBLOG_WRITE_TOKEN'] = token
+    if trust_proxy:
+        os.environ['NOBLOG_TRUST_PROXY'] = '1'
+    else:
+        os.environ.pop('NOBLOG_TRUST_PROXY', None)
 
     import app as app_module
     importlib.reload(app_module)
@@ -58,6 +63,21 @@ def app_module_token(tmp_path):
 def client_token(app_module_token):
     app_module_token.app.config['TESTING'] = True
     with app_module_token.app.test_client() as c:
+        yield c
+
+
+@pytest.fixture
+def app_module_proxy(tmp_path):
+    """Token-enabled app behind a trusted reverse proxy (NOBLOG_TRUST_PROXY=1), so
+    X-Forwarded-Proto/Host drive the cookie's Secure flag and the origin check."""
+    module = _load_app(tmp_path, token=TEST_TOKEN, trust_proxy=True)
+    yield module
+
+
+@pytest.fixture
+def client_proxy(app_module_proxy):
+    app_module_proxy.app.config['TESTING'] = True
+    with app_module_proxy.app.test_client() as c:
         yield c
 
 

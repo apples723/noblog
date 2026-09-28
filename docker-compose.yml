@@ -10,8 +10,13 @@ services:
       - SPELL_CHECK=true
       - APP_VERSION=${APP_VERSION:-dev}
       # Guards all write endpoints; the same value is the password for the
-      # NoBlog UI login at /login. Empty = no auth.
+      # NoBlog UI login at /login, so generate it with `openssl rand -hex 32`.
+      # Empty = no auth.
       - NOBLOG_WRITE_TOKEN=${NOBLOG_WRITE_TOKEN:-}
+      # Set to 1 only when exactly one trusted reverse proxy fronts this service
+      # and sets X-Forwarded-Proto/Host; required for Secure auth cookies and
+      # correct origin checks behind TLS termination.
+      - NOBLOG_TRUST_PROXY=${NOBLOG_TRUST_PROXY:-}
     volumes:
       - blog_uploads:/app/uploads
       - blog_db:/app/instance

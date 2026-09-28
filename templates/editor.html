@@ -54,6 +54,40 @@
   const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
     || (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
 
+  // ── Draft rescue on expired auth ─────────────────────────────────────────
+  // A 401 here means the auth cookie expired mid-edit, which is exactly when there
+  // is unsaved text on screen. Stash the buffer, then go to /login?next=<this page>
+  // so logging back in lands in the editor and restores what was typed.
+  const DRAFT_KEY = 'noblog:draft:' + location.pathname;
+
+  function stashDraftAndLogin() {
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        title: document.getElementById('post-title').value,
+        tags: document.getElementById('post-tags').value,
+        content: getContent(),
+      }));
+    } catch (e) { /* storage disabled or full: fall through to the login redirect */ }
+    showToast('Session expired — log in to save', 'error');
+    setTimeout(goToLogin, 900);
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    let stashed;
+    try {
+      stashed = localStorage.getItem(DRAFT_KEY);
+      if (stashed) localStorage.removeItem(DRAFT_KEY);
+    } catch (e) { return; }
+    if (!stashed) return;
+    try {
+      const draft = JSON.parse(stashed);
+      document.getElementById('post-title').value = draft.title || '';
+      document.getElementById('post-tags').value = draft.tags || '';
+      if (draft.content) setContent(draft.content);
+      showToast('Restored your unsaved draft');
+    } catch (e) { /* corrupt stash: nothing to restore */ }
+  });
+
   // ── Shared: image upload helper ──────────────────────────────────────────
   async function uploadImage(file) {
     const indicator = document.getElementById('upload-indicator');
@@ -66,7 +100,7 @@
       fd.append('image', file);
       const res = await fetch('/upload', { method: 'POST', body: fd });
       if (res.status === 401) {
-        window.location.href = '/login';
+        stashDraftAndLogin();
         return null;
       }
       if (!res.ok) throw new Error('Upload failed');
@@ -299,7 +333,7 @@
         });
       }
       if (res.status === 401) {
-        window.location.href = '/login';
+        stashDraftAndLogin();
         return;
       }
       if (!res.ok) throw new Error('Save failed');

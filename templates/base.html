@@ -77,6 +77,14 @@
       setTimeout(() => t.className = '', 2500);
     }
 
+    // ── Login redirect ──
+    // Used whenever a fetch comes back 401 (expired auth cookie): carry the current
+    // page as `next` so logging in returns here instead of dumping the user on /.
+    function goToLogin() {
+      const next = location.pathname + location.search;
+      window.location.href = '/login?next=' + encodeURIComponent(next);
+    }
+
     // ── Theme toggle ──
     (function() {
       const toggle = document.getElementById('theme-toggle');
@@ -111,7 +119,7 @@
       btn.addEventListener('click', async () => {
         const res = await fetch('/api/settings/readonly', { method: 'POST' });
         if (res.status === 401) {
-          window.location.href = '/login';
+          goToLogin();
           return;
         }
         if (!res.ok) {
