@@ -703,3 +703,23 @@ textarea.mobile-editor:focus {
 textarea.mobile-editor::placeholder {
   color: var(--muted);
 }
+
+/* ── Login ──────────────────────────────────────────────────────────────────── */
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: flex-start;
+  max-width: 320px;
+  margin: 4rem auto;
+}
+.login-label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.login-error {
+  color: var(--danger);
+  font-size: 0.9rem;
+  margin: 0;
+}
+.logout-form { display: inline-flex; }

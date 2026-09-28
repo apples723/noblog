@@ -56,7 +56,9 @@
   {% else %}
     <div class="empty-state">
       <p>No entries yet.</p>
+      {% if authenticated %}
       <a href="/new" class="btn btn-primary">Write your first post</a>
+      {% endif %}
     </div>
   {% endif %}
 </div>

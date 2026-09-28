@@ -54,6 +54,56 @@
   const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
     || (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
 
+  // ── Draft rescue on expired auth ─────────────────────────────────────────
+  // A 401 here means the auth cookie expired mid-edit, which is exactly when there
+  // is unsaved text on screen. Stash the buffer, then go to /login?next=<this page>
+  // so logging back in lands in the editor and restores what was typed.
+  const DRAFT_KEY = 'noblog:draft:' + location.pathname;
+  // A stash only exists to survive a login round-trip, which takes seconds. Anything
+  // older is an abandoned draft, and restoring it would silently overwrite whatever
+  // the post says now.
+  const DRAFT_MAX_AGE_MS = 30 * 60 * 1000;
+
+  function stashDraftAndLogin() {
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        title: document.getElementById('post-title').value,
+        tags: document.getElementById('post-tags').value,
+        content: getContent(),
+        ts: Date.now(),
+      }));
+    } catch (e) { /* storage disabled or full: fall through to the login redirect */ }
+    showToast('Session expired — log in to save', 'error');
+    setTimeout(goToLogin, 900);
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    let stashed;
+    try {
+      stashed = localStorage.getItem(DRAFT_KEY);
+    } catch (e) { return; }
+    if (!stashed) return;
+    let draft;
+    try {
+      draft = JSON.parse(stashed);
+    } catch (e) {
+      localStorage.removeItem(DRAFT_KEY);  // corrupt: nothing to restore
+      return;
+    }
+    if (!draft || !draft.ts || Date.now() - draft.ts > DRAFT_MAX_AGE_MS) {
+      localStorage.removeItem(DRAFT_KEY);  // stale: keep the server's version
+      return;
+    }
+    document.getElementById('post-title').value = draft.title || '';
+    document.getElementById('post-tags').value = draft.tags || '';
+    if (draft.content) setContent(draft.content);
+    // Drop the stash only once the restore has actually landed, so a failure here
+    // (EasyMDE never loaded, so setContent is undefined) leaves the draft on disk to
+    // be recovered by a reload instead of destroying it.
+    localStorage.removeItem(DRAFT_KEY);
+    showToast('Restored your unsaved draft');
+  });
+
   // ── Shared: image upload helper ──────────────────────────────────────────
   async function uploadImage(file) {
     const indicator = document.getElementById('upload-indicator');
@@ -65,6 +115,10 @@
       const fd = new FormData();
       fd.append('image', file);
       const res = await fetch('/upload', { method: 'POST', body: fd });
+      if (res.status === 401) {
+        stashDraftAndLogin();
+        return null;
+      }
       if (!res.ok) throw new Error('Upload failed');
       const { url } = await res.json();
       showToast('Image uploaded ✓');
@@ -294,6 +348,11 @@
           body: JSON.stringify({ title, content, tags })
         });
       }
+      if (res.status === 401) {
+        stashDraftAndLogin();
+        return;
+      }
+      if (!res.ok) throw new Error('Save failed');
       const data = await res.json();
       showToast('Saved ✓');
       setTimeout(() => window.location.href = `/post/${data.slug}`, 400);

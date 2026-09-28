@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Login &middot; {{ blog_title }}{% endblock %}
+{% block content %}
+<div class="container">
+  <form class="login-form" method="post" action="/login">
+    <input type="hidden" name="next" value="{{ next_target }}">
+    <label class="login-label" for="password">Password</label>
+    <input
+      class="tags-input"
+      type="password"
+      id="password"
+      name="password"
+      autofocus
+      autocomplete="current-password"
+      required
+    >
+    {% if error %}
+    <p class="login-error">{{ error }}</p>
+    {% endif %}
+    <button class="btn btn-primary" type="submit">Log in</button>
+  </form>
+</div>
+{% endblock %}
