@@ -18,7 +18,7 @@
   </div>
   <div class="post-body" id="post-body"></div>
   <div class="post-actions">
-    {% if not readonly_mode %}
+    {% if not readonly_mode and authenticated %}
     <a href="/edit/{{ post['id'] }}" class="btn btn-ghost">Edit</a>
     <button class="btn btn-danger" onclick="deletePost({{ post['id'] }})">Delete</button>
     {% endif %}
@@ -31,7 +31,15 @@
 
   async function deletePost(id) {
     if (!confirm('Delete this post?')) return;
-    await fetch(`/api/posts/${id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/posts/${id}`, { method: 'DELETE' });
+    if (res.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    if (!res.ok) {
+      showToast('Delete failed', 'error');
+      return;
+    }
     window.location.href = '/';
   }
 </script>

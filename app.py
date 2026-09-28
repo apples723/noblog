@@ -3,6 +3,7 @@ import hmac
 import uuid
 import sqlite3
 from datetime import datetime
+from urllib.parse import urlsplit
 from flask import Flask, request, jsonify, render_template, redirect, url_for, abort, send_from_directory
 
 app = Flask(__name__)
@@ -11,12 +12,16 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 app.config['BLOG_TITLE'] = os.environ.get('BLOG_TITLE', 'My Blog')
 app.config['SPELL_CHECK'] = os.environ.get('SPELL_CHECK', '').lower() in ('1', 'true', 'yes')
 app.config['APP_VERSION'] = os.environ.get('APP_VERSION', 'dev')
-# Shared bearer token guarding all mutation endpoints. Empty/unset = auth disabled
-# (open dev behavior). When set, NoBlog's own in-browser editor (templates/editor.html)
-# posts without a token and will receive 401 on save; enabling this effectively makes
-# an external client such as DailyPad the author. Building a NoBlog login/session
-# system is out of scope.
+# The single shared secret guarding all mutation endpoints. Empty/unset = auth
+# disabled (open dev behavior). When set it is accepted through two equivalent
+# credentials: an 'Authorization: Bearer <token>' header (used by server-to-server
+# clients such as DailyPad's publish proxy) or the noblog_auth cookie issued by
+# POST /login, which takes this same value as its password so NoBlog's own
+# in-browser UI stays usable. Both grant identical rights; there is one operator,
+# so there is no user table and no privilege separation to model.
 NOBLOG_WRITE_TOKEN = os.environ.get('NOBLOG_WRITE_TOKEN', '')
+AUTH_COOKIE_NAME = 'noblog_auth'
+AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 DB_PATH = os.environ.get('NOBLOG_DB_PATH') or os.path.join(os.path.dirname(__file__), 'instance', 'blog.db')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -34,20 +39,82 @@ def inject_globals():
         'spell_check': app.config['SPELL_CHECK'],
         'app_version': app.config['APP_VERSION'],
         'readonly_mode': readonly,
+        'auth_required': bool(NOBLOG_WRITE_TOKEN),
+        'authenticated': is_authenticated(),
     }
 
-def require_write_token():
-    """Guard for mutation endpoints. Returns None when auth is disabled or the
-    request carries the correct 'Authorization: Bearer <token>' header, otherwise
-    a Flask JSON 401 response. Uses a constant-time compare to avoid timing leaks."""
-    if not NOBLOG_WRITE_TOKEN:
-        return None
+def _bearer_ok():
+    """True when the request carries the correct 'Authorization: Bearer <token>'."""
     header = request.headers.get('Authorization', '')
     presented = header[7:] if header.startswith('Bearer ') else ''
-    # Compare even a missing token so timing does not reveal whether a token was sent.
-    if not hmac.compare_digest(presented, NOBLOG_WRITE_TOKEN):
-        return jsonify({'error': 'Unauthorized'}), 401
-    return None
+    # Compare even a missing token so timing does not reveal whether one was sent.
+    return hmac.compare_digest(presented, NOBLOG_WRITE_TOKEN)
+
+def _cookie_ok():
+    """True when the request carries the correct noblog_auth cookie."""
+    # Same reasoning as _bearer_ok(): always run the compare.
+    return hmac.compare_digest(request.cookies.get(AUTH_COOKIE_NAME, ''), NOBLOG_WRITE_TOKEN)
+
+def is_authenticated():
+    """Auth state used by templates to gate write affordances. True when auth is
+    disabled altogether or either accepted credential is valid."""
+    if not NOBLOG_WRITE_TOKEN:
+        return True
+    return _bearer_ok() or _cookie_ok()
+
+def same_origin_ok():
+    """CSRF check for cookie-authenticated requests: the request must look like it
+    came from this host. Origin wins when present, Referer is the fallback. When
+    neither header is present we accept: browsers always send at least one on
+    cross-site form posts and fetch, SameSite=Strict already withholds the cookie
+    cross-site, and non-browser clients (which send neither) authenticate with the
+    bearer token instead, which never reaches this check."""
+    origin = request.headers.get('Origin')
+    if origin:
+        return urlsplit(origin).netloc == request.host
+    referer = request.headers.get('Referer')
+    if referer:
+        return urlsplit(referer).netloc == request.host
+    return True
+
+def is_safe_redirect(target):
+    """Only allow same-site relative redirect targets, mirroring DailyPad's
+    isValidRedirectUrl() (server.js): must be a non-empty '/'-prefixed path that is
+    not protocol-relative and carries no backslash or encoded slash/backslash."""
+    if not target or not isinstance(target, str):
+        return False
+    if not target.startswith('/') or target.startswith('//'):
+        return False
+    if '\\' in target:
+        return False
+    return not any(seq in target for seq in ('%2f', '%2F', '%5c', '%5C'))
+
+def require_write_token():
+    """Guard for mutation endpoints. Returns None when auth is disabled, the request
+    carries the correct bearer token, or it carries a valid auth cookie from this
+    origin; otherwise a Flask JSON error response tuple. The bearer path deliberately
+    short-circuits before the CSRF check so server-to-server clients, which send no
+    Origin header, are unaffected. Compares are constant-time."""
+    if not NOBLOG_WRITE_TOKEN:
+        return None
+    if _bearer_ok():
+        return None
+    if _cookie_ok():
+        if not same_origin_ok():
+            return jsonify({'error': 'Invalid origin'}), 403
+        return None
+    return jsonify({'error': 'Unauthorized'}), 401
+
+def require_ui_auth():
+    """Guard for HTML editor pages. Returns None when the visitor may write,
+    otherwise a redirect to the login page preserving the requested target. The
+    HTML counterpart of require_write_token()'s JSON 401, same content-negotiation
+    spirit as handle_404."""
+    if is_authenticated():
+        return None
+    # full_path keeps the query string; Flask appends a bare '?' when there is none.
+    target = request.full_path.rstrip('?') or request.path
+    return redirect(url_for('login', next=target))
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -138,15 +205,62 @@ def view_post(slug):
 
 @app.route('/new')
 def new_post():
+    auth = require_ui_auth()
+    if auth is not None:
+        return auth
     return render_template('editor.html', post=None)
 
 @app.route('/edit/<int:post_id>')
 def edit_post(post_id):
+    auth = require_ui_auth()
+    if auth is not None:
+        return auth
     with get_db() as db:
         post = db.execute('SELECT * FROM posts WHERE id = ? AND deleted_at IS NULL', (post_id,)).fetchone()
     if not post:
         abort(404)
     return render_template('editor.html', post=post)
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Minimal single-field login. The password is NOBLOG_WRITE_TOKEN itself; on
+    success the same value is stored in an HttpOnly SameSite=Strict cookie."""
+    target = request.values.get('next', '')
+    if not is_safe_redirect(target):
+        target = '/'
+
+    if request.method == 'GET':
+        if is_authenticated():
+            return redirect(target)
+        return render_template('login.html', next_target=target, error=None)
+
+    if not same_origin_ok():
+        return render_template('login.html', next_target=target, error='Invalid origin'), 403
+    if not NOBLOG_WRITE_TOKEN:
+        return redirect(target)
+    # Never log or echo the submitted password.
+    if not hmac.compare_digest(request.form.get('password', ''), NOBLOG_WRITE_TOKEN):
+        return render_template('login.html', next_target=target, error='Incorrect password'), 401
+
+    response = redirect(target)
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        NOBLOG_WRITE_TOKEN,
+        max_age=AUTH_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite='Strict',
+        secure=request.is_secure,
+        path='/',
+    )
+    return response
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    if not same_origin_ok():
+        return jsonify({'error': 'Invalid origin'}), 403
+    response = redirect('/')
+    response.delete_cookie(AUTH_COOKIE_NAME, path='/', samesite='Strict')
+    return response
 
 @app.route('/api/posts')
 def api_list_posts():

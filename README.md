@@ -37,7 +37,7 @@ Visit `http://localhost:5000`
 | Variable             | Default    | Description                                                        |
 |----------------------|------------|--------------------------------------------------------------------|
 | `BLOG_TITLE`         | `My Blog`  | Site title in header                                               |
-| `NOBLOG_WRITE_TOKEN` | _(empty)_  | Shared bearer token protecting write endpoints. Empty = no auth.   |
+| `NOBLOG_WRITE_TOKEN` | _(empty)_  | Shared secret protecting write endpoints; doubles as the password for the NoBlog UI login at `/login`. Empty = no auth. |
 | `NOBLOG_DB_PATH`     | `instance/blog.db` | Override the SQLite database location (used mainly by tests).      |
 
 Set via `docker-compose.yml` under `environment`, or export before running locally.
@@ -45,17 +45,35 @@ Set via `docker-compose.yml` under `environment`, or export before running local
 ### Write protection / DailyPad publishing
 
 By default NoBlog is open: anyone who can reach it can create, edit, and delete
-posts. Set `NOBLOG_WRITE_TOKEN` to require an `Authorization: Bearer <token>`
-header on every mutation endpoint (`POST /api/posts`, `PUT /api/posts/<id>`,
-`DELETE /api/posts/<id>`, `POST /upload`, `POST /api/settings/readonly`). Read
-routes and HTML pages stay open. Requests with a missing or wrong token get a
-JSON `401`.
+posts. Set `NOBLOG_WRITE_TOKEN` to protect every mutation endpoint
+(`POST /api/posts`, `PUT /api/posts/<id>`, `DELETE /api/posts/<id>`,
+`POST /upload`, `POST /api/settings/readonly`). Read routes and post pages stay
+open.
 
-**Consequence:** NoBlog's own in-browser editor (`templates/editor.html`) posts
-without a token, so once `NOBLOG_WRITE_TOKEN` is set, saving from the native
-editor will fail with `401`. Enabling the token effectively makes an external
-client such as DailyPad the author. Building a NoBlog login/session system is
-out of scope; the token is a single shared secret, not per-user auth.
+Two credentials are accepted, and both grant the same full write rights:
+
+- **`Authorization: Bearer <NOBLOG_WRITE_TOKEN>`** — for server-to-server clients
+  such as DailyPad's publish proxy. Unchanged, and never subject to the CSRF
+  check below.
+- **The `noblog_auth` cookie** — for NoBlog's own browser UI. Visit `/login` and
+  enter the `NOBLOG_WRITE_TOKEN` value as the password: it doubles as the UI
+  password, so there is no second secret to manage. The cookie is `HttpOnly`,
+  `SameSite=Strict`, `Secure` over HTTPS, holds the token itself and lasts 30
+  days. `POST /logout` clears it.
+
+Unauthenticated requests to the HTML editor routes `/new` and `/edit/<id>` are
+redirected to `/login` with the original target in a `next` parameter, while
+`/api/*` and `/upload` (both called by `fetch()`) return a JSON `401`. The UI
+hides the New Post, Edit, Delete and readonly-toggle controls until you are
+logged in.
+
+Cookie-authenticated mutations additionally require a same-host `Origin` (or
+`Referer`) header, so a third-party site cannot ride along on your session. The
+bearer path skips that check, since non-browser clients send neither header.
+
+Leaving `NOBLOG_WRITE_TOKEN` unset disables auth entirely and NoBlog behaves
+exactly as it did before: everything open, no login page redirect. The token is a
+single shared secret for one operator, not per-user auth.
 
 ## Project Structure
 

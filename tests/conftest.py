@@ -22,6 +22,10 @@ def _load_app(tmp_path, token=None):
 
     import app as app_module
     importlib.reload(app_module)
+    # Keep uploaded test fixtures out of the repo's uploads/ directory.
+    upload_dir = tmp_path / 'uploads'
+    upload_dir.mkdir(exist_ok=True)
+    app_module.app.config['UPLOAD_FOLDER'] = str(upload_dir)
     app_module.init_db()
     return app_module
 
@@ -54,4 +58,14 @@ def app_module_token(tmp_path):
 def client_token(app_module_token):
     app_module_token.app.config['TESTING'] = True
     with app_module_token.app.test_client() as c:
+        yield c
+
+
+@pytest.fixture
+def client_cookie(app_module_token):
+    """Token-enabled app with the browser auth cookie already set, i.e. the state
+    after a successful POST /login."""
+    app_module_token.app.config['TESTING'] = True
+    with app_module_token.app.test_client() as c:
+        c.set_cookie(app_module_token.AUTH_COOKIE_NAME, TEST_TOKEN)
         yield c

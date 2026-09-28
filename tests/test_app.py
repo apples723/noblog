@@ -1,6 +1,9 @@
 """Tests for NoBlog: write-token enforcement, JSON validation, and existing
 components (CRUD, soft-delete, readonly, tag/slug helpers)."""
 
+import io
+from urllib.parse import unquote
+
 from conftest import TEST_TOKEN
 
 
@@ -196,3 +199,186 @@ def test_401_is_json(client_token):
 
 def test_reads_open_with_token(client_token):
     assert client_token.get('/api/posts').status_code == 200
+
+
+# ── Redirect target validation (ported from DailyPad's isValidRedirectUrl) ──────
+
+def test_is_safe_redirect(app_module):
+    is_safe_redirect = app_module.is_safe_redirect
+    assert is_safe_redirect('/new')
+    assert is_safe_redirect('/edit/1?x=1')
+    for bad in ('', None, 5, 'http://evil.example', '//evil.example', '/a\\b',
+                '/%2fevil', '/%2Fevil', '/%5cevil', '/%5Cevil'):
+        assert not is_safe_redirect(bad)
+
+
+# ── Bearer credential: unchanged behavior for server-to-server clients ─────────
+
+def test_bearer_authorizes_every_mutation(client_token):
+    created = client_token.post('/api/posts', json={'title': 'Bearer post'}, headers=auth())
+    assert created.status_code == 200
+    pid = created.get_json()['id']
+
+    assert client_token.put(f'/api/posts/{pid}', json={'title': 'Bearer edit'}, headers=auth()).status_code == 200
+    assert client_token.post(
+        '/upload',
+        data={'image': (io.BytesIO(b'png-bytes'), 'x.png')},
+        content_type='multipart/form-data',
+        headers=auth(),
+    ).status_code == 200
+    assert client_token.post('/api/settings/readonly', headers=auth()).status_code == 200
+    assert client_token.delete(f'/api/posts/{pid}', headers=auth()).status_code == 200
+
+
+# ── Cookie credential: NoBlog's own browser UI ─────────────────────────────────
+
+def test_cookie_authorizes_posts_crud(client_cookie):
+    created = client_cookie.post('/api/posts', json={'title': 'Cookie post'})
+    assert created.status_code == 200
+    pid = created.get_json()['id']
+
+    assert client_cookie.put(f'/api/posts/{pid}', json={'title': 'Cookie edit'}).status_code == 200
+    assert client_cookie.delete(f'/api/posts/{pid}').status_code == 200
+
+
+def test_cookie_authorizes_upload(client_cookie):
+    resp = client_cookie.post(
+        '/upload',
+        data={'image': (io.BytesIO(b'png-bytes'), 'x.png')},
+        content_type='multipart/form-data',
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()['url'].startswith('/uploads/')
+
+
+def test_cookie_authorizes_readonly_toggle(client_cookie):
+    assert client_cookie.post('/api/settings/readonly').get_json()['readonly'] is True
+    assert client_cookie.post('/api/settings/readonly').get_json()['readonly'] is False
+
+
+def test_wrong_cookie_and_wrong_bearer_is_401(client_token):
+    client_token.set_cookie('noblog_auth', 'nope')
+    resp = client_token.post('/api/posts', json={'title': 'X'}, headers=auth('also-nope'))
+    assert resp.status_code == 401
+    assert resp.get_json()['error'] == 'Unauthorized'
+
+
+# ── HTML editor routes redirect to /login instead of 401ing ────────────────────
+
+def test_editor_pages_redirect_to_login_when_unauthenticated(client_token):
+    created = client_token.post('/api/posts', json={'title': 'Guarded'}, headers=auth())
+    pid = created.get_json()['id']
+
+    for path in ('/new', f'/edit/{pid}'):
+        resp = client_token.get(path)
+        assert resp.status_code == 302
+        location = unquote(resp.headers['Location'])
+        assert location.startswith('/login')
+        assert f'next={path}' in location
+
+
+def test_editor_pages_render_with_cookie(client_cookie):
+    created = client_cookie.post('/api/posts', json={'title': 'Guarded'})
+    pid = created.get_json()['id']
+    assert client_cookie.get('/new').status_code == 200
+    assert client_cookie.get(f'/edit/{pid}').status_code == 200
+
+
+def test_api_still_returns_json_401_not_a_redirect(client_token):
+    resp = client_token.post('/api/posts', json={'title': 'X'})
+    assert resp.status_code == 401
+    assert resp.is_json
+
+
+# ── Login page and form ────────────────────────────────────────────────────────
+
+def test_login_page_renders_when_unauthenticated(client_token):
+    resp = client_token.get('/login')
+    assert resp.status_code == 200
+    assert b'name="password"' in resp.data
+
+
+def test_login_page_redirects_when_auth_disabled(client):
+    resp = client.get('/login')
+    assert resp.status_code == 302
+    assert resp.headers['Location'] == '/'
+
+
+def test_login_page_redirects_when_already_authenticated(client_cookie):
+    resp = client_cookie.get('/login?next=/new')
+    assert resp.status_code == 302
+    assert resp.headers['Location'] == '/new'
+
+
+def test_login_success_sets_cookie_and_authorizes(client_token):
+    resp = client_token.post('/login', data={'password': TEST_TOKEN, 'next': '/new'})
+    assert resp.status_code == 302
+    assert resp.headers['Location'] == '/new'
+    set_cookie = resp.headers['Set-Cookie']
+    assert set_cookie.startswith('noblog_auth=')
+    assert 'HttpOnly' in set_cookie
+    assert 'SameSite=Strict' in set_cookie
+    # the issued cookie is retained by the test client and authorizes a mutation
+    assert client_token.post('/api/posts', json={'title': 'Via login'}).status_code == 200
+
+
+def test_login_rejects_unsafe_next_target(client_token):
+    resp = client_token.post('/login', data={'password': TEST_TOKEN, 'next': '//evil.example'})
+    assert resp.status_code == 302
+    assert resp.headers['Location'] == '/'
+
+
+def test_login_failure_sets_no_cookie(client_token):
+    resp = client_token.post('/login', data={'password': 'wrong'})
+    assert resp.status_code == 401
+    assert 'Set-Cookie' not in resp.headers
+    assert client_token.post('/api/posts', json={'title': 'X'}).status_code == 401
+
+
+def test_logout_clears_cookie(client_cookie):
+    assert client_cookie.post('/api/posts', json={'title': 'Before logout'}).status_code == 200
+    resp = client_cookie.post('/logout')
+    assert resp.status_code == 302
+    assert client_cookie.post('/api/posts', json={'title': 'After logout'}).status_code == 401
+
+
+# ── CSRF: Origin check applies to the cookie path only ────────────────────────
+
+def test_cross_origin_cookie_mutation_is_403(client_cookie):
+    resp = client_cookie.post(
+        '/api/posts', json={'title': 'CSRF'}, headers={'Origin': 'http://evil.example'}
+    )
+    assert resp.status_code == 403
+    assert resp.get_json()['error'] == 'Invalid origin'
+
+
+def test_cross_origin_bearer_mutation_still_succeeds(client_token):
+    headers = auth()
+    headers['Origin'] = 'http://evil.example'
+    assert client_token.post('/api/posts', json={'title': 'Proxy'}, headers=headers).status_code == 200
+
+
+def test_same_origin_cookie_mutation_is_allowed(client_cookie):
+    resp = client_cookie.post(
+        '/api/posts', json={'title': 'Same origin'}, headers={'Origin': 'http://localhost'}
+    )
+    assert resp.status_code == 200
+
+
+# ── Open mode (no token) is unchanged ─────────────────────────────────────────
+
+def test_open_mode_allows_every_mutation_and_editor_pages(client):
+    created = client.post('/api/posts', json={'title': 'Open'})
+    assert created.status_code == 200
+    pid = created.get_json()['id']
+
+    assert client.get('/new').status_code == 200
+    assert client.get(f'/edit/{pid}').status_code == 200
+    assert client.put(f'/api/posts/{pid}', json={'title': 'Open edit'}).status_code == 200
+    assert client.post(
+        '/upload',
+        data={'image': (io.BytesIO(b'png-bytes'), 'x.png')},
+        content_type='multipart/form-data',
+    ).status_code == 200
+    assert client.post('/api/settings/readonly').status_code == 200
+    assert client.delete(f'/api/posts/{pid}').status_code == 200

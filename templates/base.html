@@ -26,6 +26,7 @@
     <a class="site-title" href="/">&#9632; {{ blog_title }}</a>
     <div class="header-actions">
       <span class="version-badge">{{ app_version }}</span>
+      {% if authenticated %}
       <button
         class="theme-toggle"
         id="readonly-toggle"
@@ -35,6 +36,7 @@
       >
         <i id="readonly-icon" class="fa-solid {% if readonly_mode %}fa-lock icon-readonly-on{% else %}fa-lock-open icon-readonly-off{% endif %}" aria-hidden="true"></i>
       </button>
+      {% endif %}
       <button
         class="theme-toggle"
         id="theme-toggle"
@@ -44,7 +46,24 @@
       >
         <i id="theme-icon" class="fa-solid fa-moon" aria-hidden="true"></i>
       </button>
+      {% if auth_required and not authenticated %}
+      <a href="/login" class="btn btn-ghost">Login</a>
+      {% endif %}
+      {% if auth_required and authenticated %}
+      <form method="post" action="/logout" class="logout-form">
+        <button
+          class="theme-toggle"
+          type="submit"
+          aria-label="Log out"
+          title="Log out"
+        >
+          <i class="fa-solid fa-arrow-right-from-bracket" aria-hidden="true"></i>
+        </button>
+      </form>
+      {% endif %}
+      {% if authenticated %}
       <a href="/new" class="btn btn-primary">+ New Post</a>
+      {% endif %}
     </div>
   </header>
   {% block content %}{% endblock %}
@@ -88,8 +107,17 @@
     (function() {
       const btn = document.getElementById('readonly-toggle');
       const icon = document.getElementById('readonly-icon');
+      if (!btn) return; // hidden for unauthenticated visitors
       btn.addEventListener('click', async () => {
         const res = await fetch('/api/settings/readonly', { method: 'POST' });
+        if (res.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
+        if (!res.ok) {
+          showToast('Could not change readonly mode', 'error');
+          return;
+        }
         const data = await res.json();
         if (data.readonly) {
           icon.className = 'fa-solid fa-lock icon-readonly-on';

@@ -65,6 +65,10 @@
       const fd = new FormData();
       fd.append('image', file);
       const res = await fetch('/upload', { method: 'POST', body: fd });
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return null;
+      }
       if (!res.ok) throw new Error('Upload failed');
       const { url } = await res.json();
       showToast('Image uploaded ✓');
@@ -294,6 +298,11 @@
           body: JSON.stringify({ title, content, tags })
         });
       }
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
+      if (!res.ok) throw new Error('Save failed');
       const data = await res.json();
       showToast('Saved ✓');
       setTimeout(() => window.location.href = `/post/${data.slug}`, 400);
